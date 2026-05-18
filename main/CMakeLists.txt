@@ -1,18 +1,9 @@
-# Select the PCM audio backend by changing PAPERBOY_AUDIO_PCM_IMPL:
-#   audio_pdm.c  — I2S PDM TX       (default; accurate PCM, quietest)
-#   audio_pwm.c  — LEDC PCM via ISR (accurate PCM, louder)
-#
-# The polyphonic backend (audio_poly_pwm.c) is always compiled in.
-# Runtime selection between PCM, Polyphony, and Mute is done in the game
-# selection menu via the "Snd:" item.
-#
-# Usage:  cmake -DPAPERBOY_AUDIO_PCM_IMPL=audio_pwm.c  (or edit below)
 set(PAPERBOY_AUDIO_PCM_IMPL "audio_pdm.c" CACHE STRING
     "PCM audio backend source file (audio_pdm.c or audio_pwm.c)")
 
 idf_component_register(
     SRCS "main.c" "ui.c" "msg/msg.c" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c" "battery.c"
-    INCLUDE_DIRS "." "msg" "crankboy_core" "minigb_apu"
+    INCLUDE_DIRS "." "msg" "minigb_apu"
     REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c esp_adc
 )
 
@@ -24,7 +15,7 @@ if ((IDF_VERSION_MAJOR GREATER_EQUAL 5) AND (${IDF_TARGET} MATCHES "^esp32$|esp3
 endif ()
 
 # Compile the emulator translation unit at -O3.
-# The CrankBoy core is embedded through gbemu.c as a single translation unit.
-# Keep it highly optimised, and relax a couple of warnings that come from the
-# template-expanded interpreter labels in the vendored core.
-set_source_files_properties(gbemu.c PROPERTIES COMPILE_FLAGS "-O3 -Wno-error=unused-label")
+# walnut_cgb.h is included here and contains the entire SM83 CPU decoder;
+# the extra optimisation (better register allocation, unrolling) typically
+# saves 5–15% on the hot loop.
+set_source_files_properties(gbemu.c PROPERTIES COMPILE_FLAGS "-O3")

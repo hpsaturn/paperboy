@@ -6,35 +6,28 @@
 
 #include "gbemu.h"
 #include "audio.h"
-#include "msg/msg.h"
 #include "profiler.h"
 
-#define PGB_CGB                 0
-#define ENABLE_SOUND            1
+/* Walnut-CGB feature flags – must be set before including walnut_cgb.h */
+#define WALNUT_FULL_GBC_SUPPORT 0   /* DMG-only, no CGB colour mode */
+#define WALNUT_GB_12_COLOUR     0   /* must match WALNUT_FULL_GBC_SUPPORT */
+#define WALNUT_GB_32BIT_DMA     1   /* ESP32-S3 handles unaligned 32-bit fine */
+#define ENABLE_SOUND            1   /* Enable minigb_apu audio */
 #define ENABLE_LCD              1
-#define PGB_IMPL
 
-uint8_t audio_read(void *audio, const uint16_t addr);
-void audio_write(void *audio, const uint16_t addr, const uint8_t val);
+/* Forward declarations for audio callbacks used by walnut_cgb.h */
+uint8_t audio_read(uint16_t addr);
+void audio_write(uint16_t addr, uint8_t val);
 
-#include "crankboy_core/peanut_gb.h"
+#include "walnut_cgb.h"
 
 static const char *TAG = "gbemu";
 
-int preferences_cgb_speed;
-int preferences_ppu_timing;
-int audio_enabled;
-
-static gb_s s_gb;
-static uint8_t *s_rom;
+static struct gb_s s_gb;
+static const uint8_t *s_rom;
 static size_t s_rom_size;
 static uint8_t *s_cart_ram;
 static size_t s_cart_ram_size;
-static uint8_t s_lcd[LCD_BUFFER_BYTES] __attribute__((aligned(32)));
-static uint8_t s_previous_lcd[LCD_BUFFER_BYTES] __attribute__((aligned(32)));
-static uint8_t s_wram[WRAM_SIZE_CGB] __attribute__((aligned(32)));
-static uint8_t s_vram[VRAM_SIZE_CGB] __attribute__((aligned(32)));
-static uint8_t s_epd_shadow[EPD_VIDEO_FB_SIZE] __attribute__((aligned(32)));
 static uint8_t *s_framebuffer;
 static bool s_ready;
 static char s_last_error[128];
@@ -52,24 +45,6 @@ struct persist_header {
 #define PERSIST_VERSION 1u
 static const uint8_t PERSIST_MAGIC[4] = {'P', 'B', 'S', 'V'};
 
-uint8_t audio_read(void *audio, const uint16_t addr)
-{
-    (void)audio;
-    return audio_apu_read(addr);
-}
-
-void audio_write(void *audio, const uint16_t addr, const uint8_t val)
-{
-    (void)audio;
-    audio_apu_write(addr, val);
-}
-
-void __gb_on_breakpoint(gb_s *gb, int breakpoint_number)
-{
-    (void)gb;
-    (void)breakpoint_number;
-}
-
 static void set_last_error(const char *msg)
 {
     strlcpy(s_last_error, msg, sizeof(s_last_error));
@@ -80,97 +55,86 @@ static bool gb_has_persist_data(void)
     return s_cart_ram_size > 0 || s_gb.cart_battery;
 }
 
-static void gb_invalidate_video_cache(void)
-{
-    for (size_t index = 0; index < sizeof(s_previous_lcd); index++) {
-        s_previous_lcd[index] = (uint8_t)~s_lcd[index];
-    }
-}
-
 static size_t gb_persist_rtc_size(void)
 {
     return s_gb.cart_battery ? sizeof(s_gb.cart_rtc) : 0u;
 }
 
-static inline uint8_t gb_lcd_get_pixel(const uint8_t *lcd, unsigned x, unsigned y)
+/* Audio I/O callbacks – called by Walnut-CGB when accessing APU registers.
+ * The APU state lives in audio.c; route through its public API. */
+uint8_t audio_read(uint16_t addr)
 {
-    const uint8_t packed = lcd[(y * LCD_WIDTH_PACKED) + (x >> 2)];
-    const unsigned shift = (x & 0x3u) << 1;
-
-    return (packed >> shift) & 0x03u;
+    return audio_apu_read(addr);
 }
 
-static bool lcd_line_changed(unsigned line)
+void audio_write(uint16_t addr, uint8_t val)
 {
-    const size_t row_offset = line * LCD_WIDTH_PACKED;
-
-    return memcmp(&s_lcd[row_offset], &s_previous_lcd[row_offset], LCD_WIDTH_PACKED) != 0;
+    audio_apu_write(addr, val);
 }
 
-static void copy_lcd_line(unsigned line)
+static IRAM_ATTR uint8_t gb_rom_read_cb(struct gb_s *gb, const uint_fast32_t addr)
 {
-    const size_t row_offset = line * LCD_WIDTH_PACKED;
+    (void)gb;
 
-    memcpy(&s_previous_lcd[row_offset], &s_lcd[row_offset], LCD_WIDTH_PACKED);
-}
-
-static void blit_lcd_to_epd(uint8_t *fb, const uint16_t *dirty_lines)
-{
-    const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
-
-    for (unsigned line = 0; line < GB_LCD_HEIGHT; line++) {
-        if (dirty_lines != NULL && ((dirty_lines[line >> 4] >> (line & 0xFu)) & 1u) == 0u) {
-            continue;
-        }
-
-        const unsigned target_x = (GB_LCD_HEIGHT - 1u - line) * 3u;
-        uint8_t *wrptr = &(fb[target_x / 8u]);
-        const unsigned offset_x = target_x % 8u;
-        const bool crossing = offset_x >= 6u;
-        const uint32_t stride = crossing ? 53u : 54u;
-        const uint16_t clear_tmp = 0xe000u >> offset_x;
-        const uint8_t clrmask = (uint8_t)~(clear_tmp >> 8);
-        const uint8_t clrmask_crossing = (uint8_t)~(clear_tmp & 0xffu);
-        uint8_t setmask[4];
-        uint8_t setmask_crossing[4];
-
-        for (int shade = 0; shade < 4; shade++) {
-            const uint16_t tmp = dithermap[shade] >> offset_x;
-            setmask[shade] = (uint8_t)(tmp >> 8);
-            setmask_crossing[shade] = (uint8_t)(tmp & 0xffu);
-        }
-
-        if (!crossing) {
-            for (unsigned x = 0; x < GB_LCD_WIDTH; x++) {
-                uint8_t value = *wrptr;
-                const uint8_t pixel = gb_lcd_get_pixel(s_lcd, x, line);
-
-                value &= clrmask;
-                value |= setmask[pixel];
-                *wrptr = value;
-                wrptr += stride;
-            }
-            continue;
-        }
-
-        for (unsigned x = 0; x < GB_LCD_WIDTH; x++) {
-            uint8_t value = *wrptr;
-            const uint8_t pixel = gb_lcd_get_pixel(s_lcd, x, line);
-
-            value &= clrmask;
-            value |= setmask[pixel];
-            *wrptr++ = value;
-
-            value = *wrptr;
-            value &= clrmask_crossing;
-            value |= setmask_crossing[pixel];
-            *wrptr = value;
-            wrptr += stride;
-        }
+    if (addr < s_rom_size) {
+        return s_rom[addr];
     }
+
+    return 0xFF;
 }
 
-static void gb_error_cb(gb_s *gb, const enum gb_error_e err, const uint16_t addr)
+static IRAM_ATTR uint16_t gb_rom_read16_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    (void)gb;
+
+    const uint8_t *src = &s_rom[addr];
+    // Alignment check, not required for all platforms. ESP32 series mcu flash memory and psram sources *require* this
+    if ((uintptr_t)src & 1) {
+        // fallback to safe 8-bit reads when not aligned
+        return ((uint16_t)src[0]) | ((uint16_t)src[1] << 8);          
+    } 
+    return *(uint16_t *)src;
+}
+
+static IRAM_ATTR uint32_t gb_rom_read32_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    const uint8_t *src = &s_rom[addr];
+
+    // Alignment check: ESP32 flash / PSRAM require 32-bit alignment
+    if ((uintptr_t)src & 3) {
+        // fallback to safe 8-bit reads when not aligned
+        return ((uint32_t)src[0]) |
+               ((uint32_t)src[1] << 8) |
+               ((uint32_t)src[2] << 16) |
+               ((uint32_t)src[3] << 24);
+    }
+
+    return *(uint32_t *)src;
+}
+
+static IRAM_ATTR uint8_t gb_cart_ram_read_cb(struct gb_s *gb, const uint_fast32_t addr)
+{
+    (void)gb;
+
+    if (s_cart_ram == NULL || s_cart_ram_size == 0 || addr >= s_cart_ram_size) {
+        return 0xFF;
+    }
+
+    return s_cart_ram[addr];
+}
+
+static IRAM_ATTR void gb_cart_ram_write_cb(struct gb_s *gb, const uint_fast32_t addr, const uint8_t val)
+{
+    (void)gb;
+
+    if (s_cart_ram == NULL || s_cart_ram_size == 0 || addr >= s_cart_ram_size) {
+        return;
+    }
+
+    s_cart_ram[addr] = val;
+}
+
+static void gb_error_cb(struct gb_s *gb, const enum gb_error_e err, const uint16_t addr)
 {
     (void)gb;
 
@@ -178,10 +142,69 @@ static void gb_error_cb(gb_s *gb, const enum gb_error_e err, const uint16_t addr
     set_last_error("runtime core error");
 }
 
+static IRAM_ATTR void lcd_draw_line_cb(struct gb_s *gb, const uint8_t *pixels, const uint_fast8_t line)
+{
+    (void)gb;
+
+    PROF_BEGIN(PROF_LCD);
+
+    if (line >= GB_LCD_HEIGHT) {
+        PROF_END(PROF_LCD);
+        return;
+    }
+
+    int target_x = (143 - line) * 3;
+    uint8_t *wrptr = &(s_framebuffer[target_x / 8]);
+    // We need to write 3 pixels, which might cross the byte boundary (each byte holds 8 pixels)
+    // This depends on the line being drawn
+    int offset_x = target_x % 8;
+    bool crossing = offset_x >= 6;
+    uint32_t stride = crossing ? 53 : 54;
+    uint8_t clrmask;
+    uint8_t setmask[4];
+    uint8_t clrmask_crossing;
+    uint8_t setmask_crossing[4];
+
+    const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
+    uint16_t tmp;
+    tmp = 0xe000 >> offset_x;
+    clrmask = ~(tmp >> 8);
+    clrmask_crossing = ~(tmp & 0xff);
+    for (int i = 0; i < 4; i++) {
+        tmp = dithermap[i] >> offset_x;
+        setmask[i] = tmp >> 8;
+        setmask_crossing[i] = tmp & 0xff;
+    }
+    if (!crossing) {
+        for (int i = 0; i < 160; i++) {
+            uint8_t b = *wrptr;
+            b &= clrmask;
+            b |= setmask[pixels[i]];
+            *wrptr = b;
+            wrptr += stride;
+        }
+    }
+    else {
+        for (int i = 0; i < 160; i++) {
+            uint8_t b = *wrptr;
+            b &= clrmask;
+            b |= setmask[pixels[i]];
+            *wrptr++ = b;
+            b = *wrptr;
+            b &= clrmask_crossing;
+            b |= setmask_crossing[pixels[i]];
+            *wrptr = b;
+            wrptr += stride;
+        }
+    }
+
+    PROF_END(PROF_LCD);
+}
+
 bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
 {
     enum gb_init_error_e init_err;
-    size_t save_size;
+    size_t save_size = 0;
     char rom_name[17];
 
     s_ready = false;
@@ -193,13 +216,8 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
     }
 
     memset(&s_gb, 0, sizeof(s_gb));
-    memset(s_lcd, 0, sizeof(s_lcd));
-    memset(s_previous_lcd, 0, sizeof(s_previous_lcd));
-    memset(s_wram, 0, sizeof(s_wram));
-    memset(s_vram, 0, sizeof(s_vram));
-    memset(s_epd_shadow, 0, sizeof(s_epd_shadow));
 
-    s_rom = (uint8_t *)rom;
+    s_rom = rom;
     s_rom_size = rom_size;
 
     free(s_cart_ram);
@@ -207,44 +225,38 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
     s_cart_ram_size = 0;
 
     init_err = gb_init(&s_gb,
-                       s_wram,
-                       s_vram,
-                       s_lcd,
-                       s_rom,
-                       s_rom_size,
+                       gb_rom_read_cb,
+                       gb_rom_read16_cb,
+                       gb_rom_read32_cb,
+                       gb_cart_ram_read_cb,
+                       gb_cart_ram_write_cb,
                        gb_error_cb,
-                       NULL,
-                       false);
+                       NULL);
 
-    if (init_err != GB_INIT_NO_ERROR && init_err != GB_INIT_NO_ERROR_BUT_REQUIRES_CGB) {
+    if (init_err != GB_INIT_NO_ERROR) {
         ESP_LOGE(TAG, "gb_init failed: %d", (int)init_err);
         set_last_error("gb_init failed");
         return false;
     }
 
-    audio_init();
-    gb_reset(&s_gb, false);
-
-    save_size = gb_get_save_size(&s_gb);
-
-    if (save_size > 0) {
+    if (gb_get_save_size_s(&s_gb, &save_size) == 0 && save_size > 0) {
         s_cart_ram = calloc(1, save_size);
         if (s_cart_ram == NULL) {
             set_last_error("cart ram alloc failed");
             return false;
         }
         s_cart_ram_size = save_size;
-        s_gb.gb_cart_ram = s_cart_ram;
-        s_gb.gb_cart_ram_size = save_size;
     }
 
-    gb_init_lcd(&s_gb);
+    #if ENABLE_LCD
+    gb_init_lcd(&s_gb, lcd_draw_line_cb);
+    #endif
     s_gb.direct.joypad = 0xFF;
-    audio_enabled = 1;
-    s_gb.direct.sram_updated = 0;
-    s_gb.direct.sram_dirty = 0;
 
-    ESP_LOGI(TAG, "CrankBoy core initialized. ROM title: %s", gb_get_rom_name(s_rom, rom_name));
+    /* Initialize audio system (also inits the APU) */
+    audio_init();
+
+    ESP_LOGI(TAG, "Walnut-CGB initialized. ROM title: %s", gb_get_rom_name(&s_gb, rom_name));
 
     s_ready = true;
     set_last_error("ok");
@@ -262,42 +274,28 @@ void paperboy_gb_set_buttons(uint8_t pressed_mask)
 
 bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
 {
-    void (*run_frame)(gb_s *) = gb_run_frame__dmg;
-    uint16_t dirty_lines[GB_LCD_HEIGHT / 16] = {0};
-    bool any_dirty = false;
-
     if (!s_ready) {
         return false;
     }
 
-    s_gb.direct.frame_skip = skip_render;
-
-    if (!skip_render) {
+    if (skip_render) {
+        /* Tell the emulator core to skip all pixel rendering this frame.
+         * __gb_draw_line() returns immediately when frame_skip is true and
+         * frame_skip_count is 0, skipping all sprite/background work. */
+        s_gb.direct.frame_skip = true;
+        s_gb.display.frame_skip_count = 0;
+    } else {
         s_framebuffer = fb;
     }
 
-    run_frame(&s_gb);
+    gb_run_frame_dualfetch(&s_gb);
 
+    /* Restore frame_skip to off so normal rendering resumes next frame. */
     s_gb.direct.frame_skip = false;
+    s_gb.display.frame_skip_count = 0;
 
-    if (!skip_render) {
-        PROF_BEGIN(PROF_LCD);
-        for (unsigned line = 0; line < GB_LCD_HEIGHT; line++) {
-            if (!lcd_line_changed(line)) {
-                continue;
-            }
-
-            dirty_lines[line >> 4] |= (uint16_t)(1u << (line & 0xFu));
-            copy_lcd_line(line);
-            any_dirty = true;
-        }
-
-        if (any_dirty) {
-            blit_lcd_to_epd(s_epd_shadow, dirty_lines);
-        }
-        memcpy(s_framebuffer, s_epd_shadow, sizeof(s_epd_shadow));
-        PROF_END(PROF_LCD);
-    }
+    /* Audio synthesis is now driven by the audio task at the I2S hardware
+     * clock rate, decoupled from emulation speed.  Nothing to do here. */
 
     return true;
 }
@@ -478,7 +476,6 @@ bool paperboy_gb_state_import(const uint8_t *src, size_t src_size)
         return false;
     }
 
-    gb_invalidate_video_cache();
     set_last_error("ok");
     return true;
 }
