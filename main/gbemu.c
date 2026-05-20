@@ -52,12 +52,14 @@ static void set_last_error(const char *msg)
 
 static bool gb_has_persist_data(void)
 {
-    return s_cart_ram_size > 0 || s_gb.cart_battery;
+    // return s_cart_ram_size > 0 || s_gb.cart_battery;
+    return false;
 }
 
 static size_t gb_persist_rtc_size(void)
 {
-    return s_gb.cart_battery ? sizeof(s_gb.cart_rtc) : 0u;
+    // return s_gb.cart_battery ? sizeof(s_gb.cart_rtc) : 0u;
+    return 0;
 }
 
 /* Audio I/O callbacks – called by Walnut-CGB when accessing APU registers.
@@ -324,7 +326,8 @@ bool paperboy_gb_persist_is_dirty(void)
         return false;
     }
 
-    return s_gb.direct.sram_updated != 0;
+    return true; // no counting
+    // return s_gb.direct.sram_updated != 0;
 }
 
 bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestamp)
@@ -345,7 +348,7 @@ bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestam
     memcpy(header.magic, PERSIST_MAGIC, sizeof(header.magic));
     header.version = PERSIST_VERSION;
     header.has_cart_ram = (uint8_t)(s_cart_ram_size > 0);
-    header.has_rtc = (uint8_t)(s_gb.cart_battery != 0);
+    // header.has_rtc = (uint8_t)(s_gb.cart_battery != 0);
     header.reserved = 0;
     header.cart_ram_size = (uint32_t)s_cart_ram_size;
     header.timestamp = timestamp;
@@ -358,9 +361,9 @@ bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestam
         cursor += s_cart_ram_size;
     }
 
-    if (s_gb.cart_battery) {
-        memcpy(cursor, s_gb.cart_rtc, sizeof(s_gb.cart_rtc));
-    }
+    // if (s_gb.cart_battery) {
+    //     memcpy(cursor, s_gb.cart_rtc, sizeof(s_gb.cart_rtc));
+    // }
 
     set_last_error("ok");
     return true;
@@ -393,12 +396,13 @@ bool paperboy_gb_persist_import(const uint8_t *src, size_t src_size, uint32_t cu
         return false;
     }
 
-    if ((header.has_rtc != 0) != (s_gb.cart_battery != 0)) {
-        set_last_error("persist rtc mismatch");
-        return false;
-    }
+    // if ((header.has_rtc != 0) != (s_gb.cart_battery != 0)) {
+    //     set_last_error("persist rtc mismatch");
+    //     return false;
+    // }
 
-    if (src_size != sizeof(header) + header.cart_ram_size + (header.has_rtc ? sizeof(s_gb.cart_rtc) : 0u)) {
+    // if (src_size != sizeof(header) + header.cart_ram_size + (header.has_rtc ? sizeof(s_gb.cart_rtc) : 0u)) {
+    if (src_size != sizeof(header) + header.cart_ram_size) {
         set_last_error("persist blob size mismatch");
         return false;
     }
@@ -409,16 +413,16 @@ bool paperboy_gb_persist_import(const uint8_t *src, size_t src_size, uint32_t cu
         cursor += header.cart_ram_size;
     }
 
-    if (header.has_rtc) {
-        memcpy(s_gb.cart_rtc, cursor, sizeof(s_gb.cart_rtc));
-        if (header.timestamp > 0 && current_timestamp >= header.timestamp) {
-            gb_catch_up_rtc_direct(&s_gb, current_timestamp - header.timestamp);
-        }
-        memcpy(s_gb.latched_rtc, s_gb.cart_rtc, sizeof(s_gb.latched_rtc));
-    }
+    // if (header.has_rtc) {
+    //     memcpy(s_gb.cart_rtc, cursor, sizeof(s_gb.cart_rtc));
+    //     if (header.timestamp > 0 && current_timestamp >= header.timestamp) {
+    //         gb_catch_up_rtc_direct(&s_gb, current_timestamp - header.timestamp);
+    //     }
+    //     memcpy(s_gb.latched_rtc, s_gb.cart_rtc, sizeof(s_gb.latched_rtc));
+    // }
 
-    s_gb.direct.sram_updated = 0;
-    s_gb.direct.sram_dirty = 0;
+    // s_gb.direct.sram_updated = 0;
+    // s_gb.direct.sram_dirty = 0;
     set_last_error("ok");
     return true;
 }
@@ -429,8 +433,8 @@ void paperboy_gb_persist_mark_clean(void)
         return;
     }
 
-    s_gb.direct.sram_updated = 0;
-    s_gb.direct.sram_dirty = 0;
+    // s_gb.direct.sram_updated = 0;
+    // s_gb.direct.sram_dirty = 0;
 }
 
 size_t paperboy_gb_state_size(void)
@@ -439,7 +443,8 @@ size_t paperboy_gb_state_size(void)
         return 0;
     }
 
-    return gb_get_state_size(&s_gb);
+    // return gb_get_state_size(&s_gb);
+    return 0;
 }
 
 bool paperboy_gb_state_export(uint8_t *dst, size_t dst_size)
@@ -456,7 +461,7 @@ bool paperboy_gb_state_export(uint8_t *dst, size_t dst_size)
         return false;
     }
 
-    gb_state_save(&s_gb, (char *)dst);
+    // gb_state_save(&s_gb, (char *)dst);
     set_last_error("ok");
     return true;
 }
@@ -470,11 +475,11 @@ bool paperboy_gb_state_import(const uint8_t *src, size_t src_size)
         return false;
     }
 
-    result = gb_state_load(&s_gb, (const char *)src, src_size);
-    if (result != NULL) {
-        set_last_error(result);
-        return false;
-    }
+    // result = gb_state_load(&s_gb, (const char *)src, src_size);
+    // if (result != NULL) {
+    //     set_last_error(result);
+    //     return false;
+    // }
 
     set_last_error("ok");
     return true;
