@@ -1,0 +1,3 @@
+[submodule "main/gbjit-xtensa"]
+	path = main/gbjit-xtensa
+	url = https://github.com/AL-255/gbjit-xtensa

@@ -32,7 +32,7 @@
 #define EPD_WIDTH           960
 #define EPD_HEIGHT          540
 #define EPD_LINE_PAD        16
-#define EPD_XCK             24000000
+#define EPD_XCK             28000000
 #define EPD_BUSW            8
 
 #define EPD_IMAGE_FIELDS    8
@@ -61,7 +61,7 @@
 #define EPD_FB_SIZE         (EPD_WIDTH * EPD_HEIGHT / 8)
 #define EPD_VIDEO_FB_SIZE   (EPD_VIDEO_WIDTH * EPD_VIDEO_HEIGHT / 8)
 
-#define MSG_TASK_PRIORITY   1
+#define MSG_TASK_PRIORITY   (configMAX_PRIORITIES - 1)
 
 void msg_init(void);
 void msg_start(void);

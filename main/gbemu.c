@@ -5,6 +5,7 @@
 #include <esp_attr.h>
 
 #include "gbemu.h"
+#include "gbemu_internal.h"
 #include "audio.h"
 #include "profiler.h"
 
@@ -31,6 +32,7 @@ static size_t s_cart_ram_size;
 static uint8_t *s_framebuffer;
 static bool s_ready;
 static char s_last_error[128];
+static uint32_t s_frame_count;
 
 struct persist_header {
     uint8_t magic[4];
@@ -48,6 +50,52 @@ static const uint8_t PERSIST_MAGIC[4] = {'P', 'B', 'S', 'V'};
 static void set_last_error(const char *msg)
 {
     strlcpy(s_last_error, msg, sizeof(s_last_error));
+}
+
+void paperboy_gb_blit_line(uint8_t *fb, const uint8_t *pixels, uint_fast8_t line)
+{
+    int target_x = (143 - line) * 3;
+    uint8_t *wrptr = &(fb[target_x / 8]);
+    int offset_x = target_x % 8;
+    bool crossing = offset_x >= 6;
+    uint32_t stride = crossing ? 53 : 54;
+    uint8_t clrmask;
+    uint8_t setmask[4];
+    uint8_t clrmask_crossing;
+    uint8_t setmask_crossing[4];
+    const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
+    uint16_t tmp;
+
+    tmp = 0xe000 >> offset_x;
+    clrmask = ~(tmp >> 8);
+    clrmask_crossing = ~(tmp & 0xff);
+    for (int i = 0; i < 4; i++) {
+        tmp = dithermap[i] >> offset_x;
+        setmask[i] = tmp >> 8;
+        setmask_crossing[i] = tmp & 0xff;
+    }
+
+    if (!crossing) {
+        for (int i = 0; i < 160; i++) {
+            uint8_t b = *wrptr;
+            b &= clrmask;
+            b |= setmask[pixels[i] & 0x03u];
+            *wrptr = b;
+            wrptr += stride;
+        }
+    } else {
+        for (int i = 0; i < 160; i++) {
+            uint8_t b = *wrptr;
+            b &= clrmask;
+            b |= setmask[pixels[i] & 0x03u];
+            *wrptr++ = b;
+            b = *wrptr;
+            b &= clrmask_crossing;
+            b |= setmask_crossing[pixels[i] & 0x03u];
+            *wrptr = b;
+            wrptr += stride;
+        }
+    }
 }
 
 static bool gb_has_persist_data(void)
@@ -155,55 +203,12 @@ static IRAM_ATTR void lcd_draw_line_cb(struct gb_s *gb, const uint8_t *pixels, c
         return;
     }
 
-    int target_x = (143 - line) * 3;
-    uint8_t *wrptr = &(s_framebuffer[target_x / 8]);
-    // We need to write 3 pixels, which might cross the byte boundary (each byte holds 8 pixels)
-    // This depends on the line being drawn
-    int offset_x = target_x % 8;
-    bool crossing = offset_x >= 6;
-    uint32_t stride = crossing ? 53 : 54;
-    uint8_t clrmask;
-    uint8_t setmask[4];
-    uint8_t clrmask_crossing;
-    uint8_t setmask_crossing[4];
-
-    const uint16_t dithermap[4] = {0x0000, 0x2000, 0x6000, 0xe000};
-    uint16_t tmp;
-    tmp = 0xe000 >> offset_x;
-    clrmask = ~(tmp >> 8);
-    clrmask_crossing = ~(tmp & 0xff);
-    for (int i = 0; i < 4; i++) {
-        tmp = dithermap[i] >> offset_x;
-        setmask[i] = tmp >> 8;
-        setmask_crossing[i] = tmp & 0xff;
-    }
-    if (!crossing) {
-        for (int i = 0; i < 160; i++) {
-            uint8_t b = *wrptr;
-            b &= clrmask;
-            b |= setmask[pixels[i]];
-            *wrptr = b;
-            wrptr += stride;
-        }
-    }
-    else {
-        for (int i = 0; i < 160; i++) {
-            uint8_t b = *wrptr;
-            b &= clrmask;
-            b |= setmask[pixels[i]];
-            *wrptr++ = b;
-            b = *wrptr;
-            b &= clrmask_crossing;
-            b |= setmask_crossing[pixels[i]];
-            *wrptr = b;
-            wrptr += stride;
-        }
-    }
+    paperboy_gb_blit_line(s_framebuffer, pixels, line);
 
     PROF_END(PROF_LCD);
 }
 
-bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
+static bool walnut_init(const uint8_t *rom, size_t rom_size)
 {
     enum gb_init_error_e init_err;
     size_t save_size = 0;
@@ -218,6 +223,7 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
     }
 
     memset(&s_gb, 0, sizeof(s_gb));
+    s_frame_count = 0;
 
     s_rom = rom;
     s_rom_size = rom_size;
@@ -265,7 +271,7 @@ bool paperboy_gb_init(const uint8_t *rom, size_t rom_size)
     return true;
 }
 
-void paperboy_gb_set_buttons(uint8_t pressed_mask)
+static void walnut_set_buttons(uint8_t pressed_mask)
 {
     if (!s_ready) {
         return;
@@ -274,7 +280,7 @@ void paperboy_gb_set_buttons(uint8_t pressed_mask)
     s_gb.direct.joypad = (uint8_t)(~pressed_mask);
 }
 
-bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
+static bool walnut_run_frame(uint8_t *fb, bool skip_render)
 {
     if (!s_ready) {
         return false;
@@ -299,10 +305,11 @@ bool paperboy_gb_run_frame(uint8_t *fb, bool skip_render)
     /* Audio synthesis is now driven by the audio task at the I2S hardware
      * clock rate, decoupled from emulation speed.  Nothing to do here. */
 
+    s_frame_count++;
     return true;
 }
 
-bool paperboy_gb_has_persist(void)
+static bool walnut_has_persist(void)
 {
     if (!s_ready) {
         return false;
@@ -311,7 +318,7 @@ bool paperboy_gb_has_persist(void)
     return gb_has_persist_data();
 }
 
-size_t paperboy_gb_persist_size(void)
+static size_t walnut_persist_size(void)
 {
     if (!s_ready || !gb_has_persist_data()) {
         return 0;
@@ -320,7 +327,7 @@ size_t paperboy_gb_persist_size(void)
     return sizeof(struct persist_header) + s_cart_ram_size + gb_persist_rtc_size();
 }
 
-bool paperboy_gb_persist_is_dirty(void)
+static bool walnut_persist_is_dirty(void)
 {
     if (!s_ready || !gb_has_persist_data()) {
         return false;
@@ -330,7 +337,7 @@ bool paperboy_gb_persist_is_dirty(void)
     // return s_gb.direct.sram_updated != 0;
 }
 
-bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestamp)
+static bool walnut_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestamp)
 {
     struct persist_header header;
     uint8_t *cursor;
@@ -340,7 +347,7 @@ bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestam
         return false;
     }
 
-    if (dst_size < paperboy_gb_persist_size()) {
+    if (dst_size < walnut_persist_size()) {
         set_last_error("persist export buffer too small");
         return false;
     }
@@ -369,7 +376,7 @@ bool paperboy_gb_persist_export(uint8_t *dst, size_t dst_size, uint32_t timestam
     return true;
 }
 
-bool paperboy_gb_persist_import(const uint8_t *src, size_t src_size, uint32_t current_timestamp)
+static bool walnut_persist_import(const uint8_t *src, size_t src_size, uint32_t current_timestamp)
 {
     struct persist_header header;
     const uint8_t *cursor;
@@ -427,7 +434,7 @@ bool paperboy_gb_persist_import(const uint8_t *src, size_t src_size, uint32_t cu
     return true;
 }
 
-void paperboy_gb_persist_mark_clean(void)
+static void walnut_persist_mark_clean(void)
 {
     if (!s_ready) {
         return;
@@ -437,7 +444,7 @@ void paperboy_gb_persist_mark_clean(void)
     // s_gb.direct.sram_dirty = 0;
 }
 
-size_t paperboy_gb_state_size(void)
+static size_t walnut_state_size(void)
 {
     if (!s_ready) {
         return 0;
@@ -447,9 +454,9 @@ size_t paperboy_gb_state_size(void)
     return 0;
 }
 
-bool paperboy_gb_state_export(uint8_t *dst, size_t dst_size)
+static bool walnut_state_export(uint8_t *dst, size_t dst_size)
 {
-    const size_t state_size = paperboy_gb_state_size();
+    const size_t state_size = walnut_state_size();
 
     if (!s_ready || dst == NULL) {
         set_last_error("state export unavailable");
@@ -466,7 +473,7 @@ bool paperboy_gb_state_export(uint8_t *dst, size_t dst_size)
     return true;
 }
 
-bool paperboy_gb_state_import(const uint8_t *src, size_t src_size)
+static bool walnut_state_import(const uint8_t *src, size_t src_size)
 {
     const char *result;
 
@@ -485,21 +492,54 @@ bool paperboy_gb_state_import(const uint8_t *src, size_t src_size)
     return true;
 }
 
-const uint8_t *paperboy_gb_get_framebuffer(void)
-{
-    if (!s_ready) {
-        return NULL;
-    }
-
-    return s_framebuffer;
-}
-
-bool paperboy_gb_is_ready(void)
+static bool walnut_is_ready(void)
 {
     return s_ready;
 }
 
-const char *paperboy_gb_last_error(void)
+static const char *walnut_last_error(void)
 {
     return s_last_error;
+}
+
+static bool walnut_get_stats(paperboy_gb_stats_t *stats)
+{
+    if (stats == NULL) {
+        return false;
+    }
+
+    memset(stats, 0, sizeof(*stats));
+    stats->frame_count = s_frame_count;
+    return true;
+}
+
+static bool walnut_is_rom_supported(const uint8_t *rom, size_t rom_size)
+{
+    (void)rom;
+    return rom_size >= 0x150;
+}
+
+const paperboy_gb_backend_ops_t *paperboy_gb_walnut_backend(void)
+{
+    static const paperboy_gb_backend_ops_t ops = {
+        .name = "walnut",
+        .is_rom_supported = walnut_is_rom_supported,
+        .init = walnut_init,
+        .set_buttons = walnut_set_buttons,
+        .run_frame = walnut_run_frame,
+        .has_persist = walnut_has_persist,
+        .persist_size = walnut_persist_size,
+        .persist_is_dirty = walnut_persist_is_dirty,
+        .persist_export = walnut_persist_export,
+        .persist_import = walnut_persist_import,
+        .persist_mark_clean = walnut_persist_mark_clean,
+        .state_size = walnut_state_size,
+        .state_export = walnut_state_export,
+        .state_import = walnut_state_import,
+        .is_ready = walnut_is_ready,
+        .last_error = walnut_last_error,
+        .get_stats = walnut_get_stats,
+    };
+
+    return &ops;
 }

@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
@@ -18,6 +19,7 @@
 #include "gbemu.h"
 #include "audio.h"
 #include "background.h"
+#include "paperboy_config.h"
 #include "touch.h"
 #include "ui.h"
 #include "battery.h"
@@ -147,20 +149,20 @@ static bool load_gb_rom_from_file(const char *path)
     s_rom_size = 0;
 
     /* Prefer internal DRAM: 1–3 cycle access vs PSRAM cache-miss (~20–40 cy).
-     * Falls back to PSRAM when the ROM is too large for available SRAM. */
-    s_rom_data = (uint8_t *)heap_caps_malloc(file_len,
-                                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (s_rom_data == NULL) {
-        ESP_LOGW(TAG, "ROM (%ld B) does not fit in internal SRAM, using PSRAM", file_len);
+    //  * Falls back to PSRAM when the ROM is too large for available SRAM. */
+    // s_rom_data = (uint8_t *)heap_caps_malloc(file_len,
+    //                                          MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    // if (s_rom_data == NULL) {
+        // ESP_LOGW(TAG, "ROM (%ld B) does not fit in internal SRAM, using PSRAM", file_len);
         s_rom_data = (uint8_t *)heap_caps_malloc(file_len, MALLOC_CAP_SPIRAM);
-    } else {
-        ESP_LOGI(TAG, "ROM (%ld B) allocated in internal SRAM", file_len);
-    }
-    if (s_rom_data == NULL) {
-        fclose(f);
-        ESP_LOGE(TAG, "Failed to allocate ROM buffer (%ld bytes)", file_len);
-        return false;
-    }
+    // } else {
+    //     ESP_LOGI(TAG, "ROM (%ld B) allocated in internal SRAM", file_len);
+    // }
+    // if (s_rom_data == NULL) {
+    //     fclose(f);
+    //     ESP_LOGE(TAG, "Failed to allocate ROM buffer (%ld bytes)", file_len);
+    //     return false;
+    // }
 
     read_len = fread(s_rom_data, 1, (size_t)file_len, f);
     fclose(f);
@@ -594,6 +596,11 @@ void app_main(void)
     uint8_t prev_actions = 0;
     const uint8_t *rom_data = NULL;
     size_t rom_size = 0;
+    const bool benchmark_enabled = PAPERBOY_BENCHMARK_FRAMES > 0u;
+    bool benchmark_logged = false;
+    uint32_t benchmark_frames = 0;
+    int64_t benchmark_start_us = 0;
+    paperboy_gb_stats_t benchmark_start_stats = {0};
 
     ESP_LOGI(TAG, "Initializing MSG");
     msg_init();
@@ -606,13 +613,13 @@ void app_main(void)
     memset(fb, 0xff, EPD_FB_SIZE);
     // Clear screen
     msg_display_image(fb, false);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(200));
     msg_display_image(fb, true);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(200));
     msg_display_image(fb, false);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(200));
     msg_display_image(fb, true);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(200));
 
     for (int i = 0; i < sizeof(image); i++) {
         fb[i] = ~image[i];
@@ -620,7 +627,7 @@ void app_main(void)
     //memcpy(fb, image, sizeof(image));
     msg_display_image(fb, false);
 
-    vTaskDelay(pdMS_TO_TICKS(500));
+    vTaskDelay(pdMS_TO_TICKS(200));
     msg_enable_video(true);
 
     sd_err = sdcard_mount();
@@ -702,6 +709,7 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "Entering GB render loop");
+    ESP_LOGI(TAG, "GB backend: %s", paperboy_gb_backend_name());
 
     /* Maximum number of consecutive rendered frames that may be skipped
      * (video output suppressed) when the emulator falls behind VSYNC. */
@@ -712,6 +720,11 @@ void app_main(void)
     /* Obtain the first back-buffer and record the current VSYNC epoch. */
     uint8_t *video_fb = msg_flip();
     uint32_t vsync_ref = msg_get_vsync_count();
+
+    if (benchmark_enabled) {
+        benchmark_start_us = esp_timer_get_time();
+        paperboy_gb_get_stats(&benchmark_start_stats);
+    }
 
     while (1) {
         tp_state_t touch_state;
@@ -798,5 +811,43 @@ void app_main(void)
         }
 
         profiler_frame_end(skip_render);
+
+        if (benchmark_enabled && !benchmark_logged) {
+            benchmark_frames++;
+            if (benchmark_frames >= PAPERBOY_BENCHMARK_FRAMES) {
+                paperboy_gb_stats_t benchmark_end_stats = {0};
+                int64_t elapsed_us = esp_timer_get_time() - benchmark_start_us;
+                double fps = elapsed_us > 0 ? ((double)benchmark_frames * 1000000.0) / (double)elapsed_us : 0.0;
+
+                paperboy_gb_get_stats(&benchmark_end_stats);
+                ESP_LOGI(TAG,
+                         "[BENCH] backend=%s frames=%" PRIu32 " elapsed_us=%" PRId64 " fps=%.2f",
+                         paperboy_gb_backend_name(), benchmark_frames, elapsed_us, fps);
+
+                if (benchmark_end_stats.has_emulated_cycles &&
+                    benchmark_end_stats.emulated_cycles > benchmark_start_stats.emulated_cycles &&
+                    elapsed_us > 0) {
+                    const uint64_t delta_cycles =
+                        benchmark_end_stats.emulated_cycles - benchmark_start_stats.emulated_cycles;
+                    const double mhz = (double)delta_cycles / (double)elapsed_us;
+
+                    ESP_LOGI(TAG,
+                             "[BENCH] emu_cycles=%" PRIu64 " mhz=%.3f dmg_x=%.3f",
+                             delta_cycles, mhz, mhz / 4.194304);
+                }
+
+                if (benchmark_end_stats.has_jit_counters) {
+                    ESP_LOGI(TAG,
+                             "[BENCH] blocks_compiled=%" PRIu64 " blocks_executed=%" PRIu64
+                             " chain_hits=%" PRIu64 " chain_misses=%" PRIu64,
+                             benchmark_end_stats.blocks_compiled - benchmark_start_stats.blocks_compiled,
+                             benchmark_end_stats.blocks_executed - benchmark_start_stats.blocks_executed,
+                             benchmark_end_stats.chain_hits - benchmark_start_stats.chain_hits,
+                             benchmark_end_stats.chain_misses - benchmark_start_stats.chain_misses);
+                }
+
+                benchmark_logged = true;
+            }
+        }
     }
 }

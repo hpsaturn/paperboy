@@ -8,6 +8,12 @@
 #define GB_LCD_WIDTH    160
 #define GB_LCD_HEIGHT   144
 
+typedef enum {
+    PAPERBOY_GB_BACKEND_AUTO = 0,
+    PAPERBOY_GB_BACKEND_WALNUT,
+    PAPERBOY_GB_BACKEND_GBJIT,
+} paperboy_gb_backend_t;
+
 #define GB_BTN_A        0x01
 #define GB_BTN_B        0x02
 #define GB_BTN_SELECT   0x04
@@ -16,6 +22,17 @@
 #define GB_BTN_LEFT     0x20
 #define GB_BTN_UP       0x40
 #define GB_BTN_DOWN     0x80
+
+typedef struct {
+    bool has_emulated_cycles;
+    bool has_jit_counters;
+    uint64_t emulated_cycles;
+    uint32_t frame_count;
+    uint64_t blocks_compiled;
+    uint64_t blocks_executed;
+    uint64_t chain_hits;
+    uint64_t chain_misses;
+} paperboy_gb_stats_t;
 
 bool paperboy_gb_init(const uint8_t *rom, size_t rom_size);
 void paperboy_gb_set_buttons(uint8_t pressed_mask);
@@ -33,5 +50,7 @@ bool paperboy_gb_state_export(uint8_t *dst, size_t dst_size);
 bool paperboy_gb_state_import(const uint8_t *src, size_t src_size);
 bool paperboy_gb_is_ready(void);
 const char *paperboy_gb_last_error(void);
+const char *paperboy_gb_backend_name(void);
+bool paperboy_gb_get_stats(paperboy_gb_stats_t *stats);
 
 #endif

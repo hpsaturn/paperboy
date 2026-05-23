@@ -80,26 +80,27 @@ void profiler_frame_end(bool skipped)
     float inv_frames = (s_sec_frames > 0) ? (1.0f / (float)s_sec_frames) : 0.0f;
 
     float ms_frame = (float)s_sec_us[PROF_FRAME] * inv_frames * 0.001f;
+    float ms_ppu   = (float)s_sec_us[PROF_PPU]   * inv_frames * 0.001f;
     float ms_lcd   = (float)s_sec_us[PROF_LCD]   * inv_frames * 0.001f;
     float ms_flip  = (float)s_sec_us[PROF_FLIP]  * inv_frames * 0.001f;
     float ms_touch = (float)s_sec_us[PROF_TOUCH] * inv_frames * 0.001f;
-    float ms_cpu   = ms_frame - ms_lcd; /* pure CPU stepping */
+    float ms_cpu   = ms_frame - ms_lcd - ms_ppu; /* pure CPU stepping */
 
     /* Drain the audio accumulator atomically. */
     uint32_t audio_us = atomic_exchange_explicit(&s_audio_sec_us, 0u,
                                                  memory_order_relaxed);
     float ms_audio = (float)audio_us * inv_frames * 0.001f;
 
-    float ms_total = ms_cpu + ms_lcd + ms_touch;
+    float ms_total = ms_frame + ms_touch;
 
     const float budget_ms = 17.7f;
     float budget_pct = 100.0f * ms_total / budget_ms;
 
     ESP_LOGI(TAG, "%" PRIu32 " fr (%" PRIu32 " skip) "
-             "| cpu %5.2fms  lcd %5.2fms  flip %5.2fms  touch %5.2fms  audio %5.2fms "
-             "| total %5.2fms / %.2fms budget (%4.1f%%)",
+             "| cpu %4.1fms  ppu %4.1fms  lcd %4.1fms  flip %4.1fms  touch %4.1fms  audio %4.1fms "
+             "| total %4.1fms / %.1fms budget (%4.1f%%)",
              s_sec_frames, s_sec_skipped,
-             ms_cpu, ms_lcd, ms_flip, ms_touch, ms_audio,
+             ms_cpu, ms_ppu, ms_lcd, ms_flip, ms_touch, ms_audio,
              ms_total, budget_ms, budget_pct);
 
     /* Reset for next interval. */

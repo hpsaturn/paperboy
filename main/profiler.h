@@ -36,10 +36,11 @@
 #include <stdint.h>
 
 #define PROF_FRAME  0
-#define PROF_LCD    1
-#define PROF_FLIP   2
-#define PROF_TOUCH  3
-#define PROF_PHASES 4
+#define PROF_PPU    1
+#define PROF_LCD    2
+#define PROF_FLIP   3
+#define PROF_TOUCH  4
+#define PROF_PHASES 5
 
 /* Record the start of a measurement for the given phase. */
 void profiler_begin(int phase);

@@ -64,8 +64,6 @@ static volatile bool flip_req;
 static volatile bool enable_video;
 static TaskHandle_t flip_waiter_task;
 
-#define FRAME_TARGET_US ((int64_t)PAPERBOY_FRAME_TIME_MS * 1000)
-
 // Ping-pong DMA buffer
 static uint8_t *dma_buf[2];
 static int dma_front_buffer;
