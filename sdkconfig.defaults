@@ -13,3 +13,4 @@
 # of harmless macro redefinitions (likely/unlikely, DMG_CLOCK_FREQ, ...).
 # The upstream project disables IDF's default -Werror; keep it disabled here.
 CONFIG_COMPILER_DISABLE_DEFAULT_ERRORS=y
+CONFIG_FATFS_LFN_HEAP=y
