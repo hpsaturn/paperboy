@@ -16,7 +16,7 @@ set(PAPERBOY_AUDIO_PCM_IMPL "${PAPERBOY_AUDIO_PCM_IMPL_DEFAULT}" CACHE STRING
     "PCM audio backend source file (audio_pdm.c or audio_pwm.c)")
 
 idf_component_register(
-    SRCS "main.c" "ui.c" "${PAPERBOY_EPD_IMPL}" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c" "battery.c"
+    SRCS "main.c" "ui.c" "${PAPERBOY_EPD_IMPL}" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c" "battery.c" "power_button.c"
     INCLUDE_DIRS "." "msg" "crankboy_core" "minigb_apu"
     REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c esp_adc
 )

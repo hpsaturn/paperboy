@@ -2,6 +2,7 @@
 #include "battery.h"
 #include "msg/msg.h"
 #include "touch.h"
+#include "power_button.h"
 #include "gbemu.h"   /* GB_BTN_* masks */
 #include "audio.h"   /* audio_engine_t, audio_set/get_engine */
 
@@ -486,6 +487,12 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
 
         /* ── Input ──────────────────────────────────────────────── */
         ui_input_t ev = input_poll();
+
+        /* Hardware power button also works while the menu is open. */
+        if (power_button_off_requested()) {
+            heap_caps_free(files);
+            return UI_ROM_PICK_POWER_OFF;
+        }
 
         if (ev.buttons & GB_BTN_DOWN) {
             /* Advance, skipping non-selectable items. */

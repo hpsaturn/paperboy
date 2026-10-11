@@ -21,6 +21,7 @@
 #include "touch.h"
 #include "ui.h"
 #include "battery.h"
+#include "power_button.h"
 #include "profiler.h"
 
 static const char *TAG = "paperboy";
@@ -656,6 +657,9 @@ void app_main(void)
     tp_init();  /* GT911 touch — non-fatal if absent */
     battery_init();
 
+    power_button_init();   /* M5Paper dial-switch centre = power button */
+    power_button_start();
+
     uint8_t *fb = (uint8_t *)heap_caps_calloc(1, EPD_FB_SIZE, MALLOC_CAP_SPIRAM);
     memset(fb, 0xff, EPD_FB_SIZE);
     // Clear screen
@@ -822,6 +826,12 @@ void app_main(void)
         }
 
         if (action_edges & TP_ACTION_POWER) {
+            paperboy_gb_set_buttons(0);
+            paperboy_power_off(true);
+        }
+
+        /* Hardware power button (M5Paper dial-switch centre, GPIO38). */
+        if (power_button_off_requested()) {
             paperboy_gb_set_buttons(0);
             paperboy_power_off(true);
         }
