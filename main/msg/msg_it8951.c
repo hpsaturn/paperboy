@@ -96,7 +96,15 @@ static void it_wait_busy(void)
             ESP_LOGE(TAG, "BUSY timeout");
             return;
         }
-        esp_rom_delay_us(20);
+        /* The IT8951 holds HRDY low for the whole panel refresh, which on this
+         * board is ~300 ms.  A pure busy loop (esp_rom_delay_us) keeps the CPU
+         * at this priority spinning the entire time, so the FreeRTOS IDLE task
+         * on this core never runs and the 5 s task watchdog fires every cycle.
+         * Block for one tick (10 ms @ CONFIG_FREERTOS_HZ=100) instead: the IDLE
+         * task runs (WDT is fed) and 10 ms is negligible against a ~300 ms
+         * refresh.  Note pdMS_TO_TICKS(2) is 0 ticks at 100 Hz -- vTaskDelay(0)
+         * only yields, it does not let a lower-priority IDLE task run. */
+        vTaskDelay(1);
     }
 }
 
@@ -170,7 +178,7 @@ static void it_wait_lut(void)
         if (afsr == 0) {
             break;
         }
-        vTaskDelay(pdMS_TO_TICKS(2));
+        vTaskDelay(1);   /* real 10 ms block so IDLE0 is scheduled */
     } while (++guard < 2000);
 }
 
