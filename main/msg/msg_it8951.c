@@ -6,21 +6,29 @@
 //
 //     ESP32 (SPI2) ──SCK/MOSI/MISO+CS── IT8951E ── TCON ──> ED047TC1
 //
-// The IT8951 owns the panel timing and the waveform ("update mode") state, so
-// this backend is intentionally much simpler than the M5PaperS3 "MSG" engine:
+// Architecture — mirrors the M5PaperS3 "MSG" engine (msg/msg.c):
 //
-//   * msg_display_image()  → load a full-panel 1bpp image into IT8951 memory
-//                            and refresh it (direct update).
-//   * msg_flip()           → expand the emulator's 432x160 packed 1bpp frame
-//                            into the 432x480 on-panel window and refresh it.
+//   * msg_start() spawns a dedicated display task pinned to CPU1 which owns the
+//     SPI bus and the panel.  The task blocks until a completed frame is
+//     published, snapshots it, then pushes it to the IT8951 (4bpp area load +
+//     DU refresh), and drops frames the panel cannot keep up with.
+//
+//   * The emulator (app_main, CPU0) renders into a scratch buffer and calls
+//     msg_flip().  msg_flip() hands a copy of the finished frame to the display
+//     task and returns the scratch buffer again, so emulation and panel I/O run
+//     concurrently on the two cores -- exactly the split the S3 backend has
+//     between app_main and msg_update_task.
+//
+//   * msg_flip() is paced by a 60 Hz emulated-frame clock (the Game Boy frame
+//     rate), not by the panel.  On the S3 the panel VSYNC *is* the frame clock
+//     (57 fps) and the two coincide; here one refresh takes ~300 ms (~3 fps),
+//     so tying the emulator to the panel would run the game in 20x slow motion.
+//     Instead the game logic (and audio) run at their correct speed and the
+//     display task shows the freshest frame it has.
 //
 // Low-level SPI framing (0x6000 command / 0x0000 data / 0x1000 read preambles,
 // LD_IMG_AREA 4bpp "B" endian loads, DPY_BUF_AREA refresh) follows M5Stack's
-// M5EPD driver, which is the shipping driver for this exact hardware.
-//
-// Note: the original M5Paper cannot refresh the panel at 57 fps.  msg_flip()
-// therefore blocks until each IT8951 update completes; the emulator naturally
-// runs as fast as the panel allows.
+// M5EPD driver, the shipping driver for this exact hardware.
 //
 // The 4bpp wire encoding uses 0x0 = black, 0xF = white.
 //
@@ -31,15 +39,16 @@
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_timer.h"
-#include "esp_rom_sys.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
 
 #include "board.h"
 #include "msg.h"
+#include "audio.h"
 
 #if defined(PLAT_M5PAPER)
 
@@ -66,44 +75,39 @@ static const char *TAG = "msg_it8951";
 /* Update modes */
 #define UPDATE_MODE_INIT            0
 #define UPDATE_MODE_DU              1
-#define UPDATE_MODE_GC16            2
-#define UPDATE_MODE_GL16            3
-#define UPDATE_MODE_DU4             6
 
 /* IT8951 memory address used for image loads (M5EPD default). */
 #define IT8951_MEM_ADDR             0x001236E0u
+
+/* Emulated frame period: 60 Hz, the Game Boy frame rate.  This is the pacing
+ * clock handed to the emulator (see msg_flip). */
+#define IT_FRAME_US                 16667
 
 /* ── State ─────────────────────────────────────────────────────────────── */
 static spi_device_handle_t s_spi;
 static volatile uint32_t   s_vsync_count;
 
-/* Triple-buffer-ish pair, matching the msg.c contract: the emulator renders
- * into one and the other is the frame currently on the panel. */
-static uint8_t *fb[2];
-static int      cur;   /* buffer the caller is (or is about to be) rendering into */
-static bool     enable_video;
-static bool     s_ready;
-static bool     s_img_to_white;
+/* Frame hand-off buffers.
+ *
+ *   s_render  — scratch the emulator draws into; msg_flip() always returns it.
+ *               The emulator fully redraws EPD_VIDEO_FB_SIZE every frame, so a
+ *               single buffer is sufficient.
+ *   s_pending — copy of the most recently finished frame (guarded by
+ *               s_pub_mutex).  Written by msg_flip(), read by the display task.
+ *   s_push    — display task private snapshot, stable for the whole (slow)
+ *               panel refresh.
+ */
+static uint8_t *s_render;
+static uint8_t *s_pending;
+static uint8_t *s_push;
 
-/* ── Cooperative WDT service ───────────────────────────────────────────────
- * The whole IT8951 push runs in the caller's task (the app_main render loop,
- * pinned to CPU0).  One full-frame push is ~330 ms of SPI traffic plus panel
- * refresh, and nothing on that path blocks on a FreeRTOS primitive for more
- * than a tick, so IDLE0 can go unscheduled for far longer than the 5 s task
- * watchdog timeout -- which then fires on every cycle.  Yield at least once
- * every second so IDLE0 runs and feeds the TWDT.  vTaskDelay(1) is what lets
- * the *lower-priority* idle task run; taskYIELD() would not. */
-#define IT_WDT_YIELD_US (1000 * 1000)
-static int64_t s_last_yield_us;
-
-static void it_service_wdt(void)
-{
-    int64_t now = esp_timer_get_time();
-    if (now - s_last_yield_us >= IT_WDT_YIELD_US) {
-        s_last_yield_us = now;
-        vTaskDelay(1);
-    }
-}
+static SemaphoreHandle_t s_pub_mutex;   /* guards s_pending                */
+static SemaphoreHandle_t s_disp_sem;    /* frame ready -> display task     */
+static SemaphoreHandle_t s_frame_sem;   /* 60 Hz frame clock -> msg_flip() */
+static esp_timer_handle_t s_frame_timer;
+static TaskHandle_t      s_disp_task;
+static bool              s_ready;
+static volatile bool     enable_video;
 
 /* ── Low-level SPI framing ─────────────────────────────────────────────── */
 
@@ -116,14 +120,10 @@ static void it_wait_busy(void)
             ESP_LOGE(TAG, "BUSY timeout");
             return;
         }
-        /* The IT8951 holds HRDY low for the whole panel refresh, which on this
-         * board is ~300 ms.  A pure busy loop (esp_rom_delay_us) keeps the CPU
-         * at this priority spinning the entire time, so the FreeRTOS IDLE task
-         * on this core never runs and the 5 s task watchdog fires every cycle.
-         * Block for one tick (10 ms @ CONFIG_FREERTOS_HZ=100) instead: the IDLE
-         * task runs (WDT is fed) and 10 ms is negligible against a ~300 ms
-         * refresh.  Note pdMS_TO_TICKS(2) is 0 ticks at 100 Hz -- vTaskDelay(0)
-         * only yields, it does not let a lower-priority IDLE task run. */
+        /* The IT8951 holds HRDY low for the whole panel refresh (~300 ms).  A
+         * pure busy loop would keep the CPU spinning the entire time; block for
+         * one tick instead.  This runs in the core-1 display task, so IDLE1
+         * gets scheduled and the task watchdog stays happy. */
         vTaskDelay(1);
     }
 }
@@ -198,8 +198,8 @@ static void it_wait_lut(void)
         if (afsr == 0) {
             break;
         }
-        vTaskDelay(1);   /* real 10 ms block so IDLE0 is scheduled */
-    } while (++guard < 2000);
+        vTaskDelay(1);   /* real 10 ms block so IDLE1 is scheduled */
+    } while (++guard < 500);
 }
 
 /* ── Streaming 4bpp image writer ───────────────────────────────────────── */
@@ -301,6 +301,56 @@ static inline uint16_t pack4(const uint8_t *src, int x, bool invert)
     return w;
 }
 
+/* ── Panel writers (callers must be the only user of the SPI bus) ───────── */
+
+/* Push one 432x160 packed frame into the 432x480 on-panel window. */
+static void it_push_video_frame(const uint8_t *src)
+{
+    it_ld_img_area_begin(EPD_VIDEO_WIN_X, EPD_VIDEO_WIN_Y,
+                         EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H);
+    for (int ry = 0; ry < EPD_VIDEO_WIN_H; ry++) {
+        /* Each packed source row (logical GB x) is shown 3x vertically. */
+        const uint8_t *row = src + (size_t)(ry / 3) * (EPD_VIDEO_WIDTH / 8);
+        for (int x = 0; x < EPD_VIDEO_WIDTH; x += 4) {
+            itw_raw(pack4(row, x, false));
+        }
+    }
+    it_ld_img_area_end();
+    it_update_area(EPD_VIDEO_WIN_X, EPD_VIDEO_WIN_Y,
+                   EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H, UPDATE_MODE_DU);
+}
+
+/* Display task: owns the panel.  Waits for a published frame, snapshots it and
+ * pushes it.  Because it only ever picks up the *latest* frame, frames produced
+ * by the (much faster) emulator while a refresh is in flight are dropped. */
+static void it_display_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        if (xSemaphoreTake(s_disp_sem, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if (!s_ready || !enable_video) {
+            continue;
+        }
+
+        /* Snapshot quickly, then release so the emulator can publish again. */
+        xSemaphoreTake(s_pub_mutex, portMAX_DELAY);
+        memcpy(s_push, s_pending, EPD_VIDEO_FB_SIZE);
+        xSemaphoreGive(s_pub_mutex);
+
+        it_push_video_frame(s_push);
+    }
+}
+
+/* 60 Hz frame clock: bumps the vsync counter and releases the emulator. */
+static void it_frame_tick(void *arg)
+{
+    (void)arg;
+    s_vsync_count++;
+    xSemaphoreGive(s_frame_sem);
+}
+
 /* ── Board power / controller init ─────────────────────────────────────── */
 
 static void board_epd_power(bool on)
@@ -372,39 +422,53 @@ static void it_hw_init(void)
 
 void msg_init(void)
 {
-    cur          = 0;
+    s_ready = false;
     enable_video = false;
-    s_ready      = false;
-    s_img_to_white = false;
+    s_vsync_count = 0;
 
     board_epd_power(true);
     it_hw_init();
 
-    for (int i = 0; i < 2; i++) {
-        /* MALLOC_CAP_8BIT is mandatory here.  MALLOC_CAP_INTERNAL alone may hand
-         * out IRAM (0x4008_0000-0x400A_0000) on the original ESP32, which the CPU
-         * can only read/write with 4-byte aligned word accesses.  Both the
-         * emulator core and pack4() touch this buffer byte-wise, which aborts
-         * with a LoadStoreError if the buffer lands in IRAM.  Fall back to PSRAM
-         * (byte accessible) if internal DRAM cannot satisfy the request. */
-        fb[i] = (uint8_t *)heap_caps_aligned_calloc(16, 1, EPD_VIDEO_FB_SIZE,
-                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-        if (fb[i] == NULL) {
-            fb[i] = (uint8_t *)heap_caps_aligned_calloc(16, 1, EPD_VIDEO_FB_SIZE,
-                                                        MALLOC_CAP_SPIRAM);
+    s_pub_mutex = xSemaphoreCreateMutex();
+    s_disp_sem  = xSemaphoreCreateBinary();
+    s_frame_sem = xSemaphoreCreateBinary();
+    if (s_pub_mutex == NULL || s_disp_sem == NULL || s_frame_sem == NULL) {
+        ESP_LOGE(TAG, "semaphore allocation failed");
+    }
+
+    esp_timer_create_args_t targs = {
+        .callback = it_frame_tick,
+        .arg      = NULL,
+        .name     = "epd_frame",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&targs, &s_frame_timer));
+
+    /* MALLOC_CAP_8BIT is mandatory here.  MALLOC_CAP_INTERNAL alone may hand
+     * out IRAM (0x4008_0000-0x400A_0000) on the original ESP32, which the CPU
+     * can only read/write with 4-byte aligned word accesses.  Both the
+     * emulator core and pack4() touch these buffers byte-wise, which aborts
+     * with a LoadStoreError if a buffer lands in IRAM.  Fall back to PSRAM
+     * (byte accessible) if internal DRAM cannot satisfy the request. */
+    uint8_t **bufs[3] = { &s_render, &s_pending, &s_push };
+    for (int i = 0; i < 3; i++) {
+        *bufs[i] = (uint8_t *)heap_caps_aligned_calloc(16, 1, EPD_VIDEO_FB_SIZE,
+                                                       MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (*bufs[i] == NULL) {
+            *bufs[i] = (uint8_t *)heap_caps_aligned_calloc(16, 1, EPD_VIDEO_FB_SIZE,
+                                                           MALLOC_CAP_SPIRAM);
         }
-        if (fb[i] == NULL) {
-            ESP_LOGE(TAG, "failed to allocate video buffer %d", i);
+        if (*bufs[i] == NULL) {
+            ESP_LOGE(TAG, "failed to allocate frame buffer %d", i);
         } else {
-            memset(fb[i], 0xFF, EPD_VIDEO_FB_SIZE);   /* start white */
+            memset(*bufs[i], 0xFF, EPD_VIDEO_FB_SIZE);   /* start white */
         }
     }
 }
 
 void msg_start(void)
 {
-    it_service_wdt();
-    /* Flash the panel to a clean white state (INIT waveform). */
+    /* Flash the panel to a clean white state (INIT waveform).  Runs before the
+     * display task exists, so it is the only SPI user here. */
     it_ld_img_area_begin(0, 0, EPD_WIDTH, EPD_HEIGHT);
     for (int i = 0; i < (EPD_WIDTH * EPD_HEIGHT / 4); i++) {
         itw_raw(0xFFFF);
@@ -413,7 +477,18 @@ void msg_start(void)
     it_update_area(0, 0, EPD_WIDTH, EPD_HEIGHT, UPDATE_MODE_INIT);
 
     s_ready = true;
-    ESP_LOGI(TAG, "Panel initialised (white)");
+
+    /* Start the emulated-frame clock (60 Hz). */
+    ESP_ERROR_CHECK(esp_timer_start_periodic(s_frame_timer, IT_FRAME_US));
+
+    BaseType_t result = xTaskCreatePinnedToCore(it_display_task, "msg", 8192,
+                                                NULL, MSG_TASK_PRIORITY,
+                                                &s_disp_task, 1);
+    if (result != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create display task");
+    }
+
+    ESP_LOGI(TAG, "Panel initialised (white), display task on CPU1");
 }
 
 void msg_display_image(uint8_t *img, bool to_white)
@@ -421,7 +496,10 @@ void msg_display_image(uint8_t *img, bool to_white)
     if (img == NULL || !s_ready) {
         return;
     }
-    it_service_wdt();
+
+    /* Boot-time full-panel image.  Video is not enabled yet, so the display
+     * task is idle; still serialise on the publish mutex for safety. */
+    xSemaphoreTake(s_pub_mutex, portMAX_DELAY);
 
     /* Load the full 960x540 1bpp image, MSB-first, bit set = black unless
      * to_white requests the inverse polarity. */
@@ -434,43 +512,43 @@ void msg_display_image(uint8_t *img, bool to_white)
     }
     it_ld_img_area_end();
     it_update_area(0, 0, EPD_WIDTH, EPD_HEIGHT, UPDATE_MODE_DU);
+
+    xSemaphoreGive(s_pub_mutex);
 }
 
 void msg_enable_video(bool en)
 {
+    /* While video mode is off the display task drops any published frame
+     * (mirrors the S3 backend, which streams blank lines until enabled). */
     enable_video = en;
 }
 
 uint8_t *msg_flip(void)
 {
-    /* The caller has just finished rendering into fb[cur]; push it to the
-     * panel, then hand out the other buffer for the next frame. */
-    if (enable_video && s_ready && fb[cur] != NULL) {
-        it_service_wdt();
-        const uint8_t *src = fb[cur];
-        it_ld_img_area_begin(EPD_VIDEO_WIN_X, EPD_VIDEO_WIN_Y,
-                             EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H);
-        for (int ry = 0; ry < EPD_VIDEO_WIN_H; ry++) {
-            /* Each packed source row (logical GB x) is shown 3x vertically. */
-            const uint8_t *row = src + (size_t)(ry / 3) * (EPD_VIDEO_WIDTH / 8);
-            for (int x = 0; x < EPD_VIDEO_WIDTH; x += 4) {
-                itw_raw(pack4(row, x, false));
-            }
-        }
-        it_ld_img_area_end();
-        it_update_area(EPD_VIDEO_WIN_X, EPD_VIDEO_WIN_Y,
-                       EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H, UPDATE_MODE_DU);
+    /* Pace to the 60 Hz emulated frame clock (see file header). */
+    xSemaphoreTake(s_frame_sem, portMAX_DELAY);
+
+    /* Hand the finished frame to the display task.  A copy is required because
+     * the emulator immediately reuses s_render for the next frame. */
+    if (s_ready && s_render != NULL && s_pending != NULL) {
+        xSemaphoreTake(s_pub_mutex, portMAX_DELAY);
+        memcpy(s_pending, s_render, EPD_VIDEO_FB_SIZE);
+        xSemaphoreGive(s_pub_mutex);
+        xSemaphoreGive(s_disp_sem);
     }
 
-    cur ^= 1;
-    s_vsync_count++;
-    return fb[cur];
+    /* The S3 display task services audio once per frame; here the frame clock is
+     * the emulator's, so service it here (once per emulated frame, ~60 Hz). */
+    audio_service_frame();
+
+    return s_render;
 }
 
 uint8_t *msg_flip_nowait(void)
 {
-    /* Return the current render buffer without touching the panel. */
-    return fb[cur];
+    /* Frame skipped: do not publish, do not wait for the frame clock. */
+    audio_service_frame();
+    return s_render;
 }
 
 uint32_t msg_get_vsync_count(void)
