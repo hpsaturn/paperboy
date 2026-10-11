@@ -1,5 +1,6 @@
 #include "touch.h"
 #include "gbemu.h"
+#include "board.h"
 
 #include <string.h>
 #include <stdbool.h>
@@ -10,12 +11,12 @@
 
 static const char *TAG = "touch";
 
-/* ── Hardware constants (M5PaperS3) ─────────────────────────────────────── */
+/* ── Hardware constants (per board, see board.h) ────────────────────────── */
 
-#define GT911_I2C_PORT   I2C_NUM_1
-#define GT911_PIN_SDA    41
-#define GT911_PIN_SCL    42
-#define GT911_PIN_INT    48   /* active-low when a touch sample is ready */
+#define GT911_I2C_PORT   ((i2c_port_t)TOUCH_I2C_PORT_NUM)
+#define GT911_PIN_SDA    TOUCH_PIN_SDA
+#define GT911_PIN_SCL    TOUCH_PIN_SCL
+#define GT911_PIN_INT    TOUCH_PIN_INT   /* active-low when a sample is ready */
 #define GT911_FREQ_HZ    400000
 
 /* I2C transaction timeout.  Long enough for the GT911 to respond, short

@@ -1,0 +1,15 @@
+# ---------------------------------------------------------------------------
+# M5Paper (original) — ESP32-D0WDQ6-V3
+# ---------------------------------------------------------------------------
+
+# M5Paper has 16 MB flash in DIO mode.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+
+# The M5Paper carries an 8 MB ESPSRAM64H external SPI PSRAM (4 MB usable).
+# Paperboy allocates the panel framebuffer, ROM image and save/state buffers
+# with MALLOC_CAP_SPIRAM, so PSRAM must be enabled or those allocations fail.
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_BOOT_INIT=y
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_SPEED_40M=y

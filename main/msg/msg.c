@@ -40,6 +40,8 @@
 #include "paperboy_config.h"
 #include "msg.h"
 
+#if defined(PLAT_M5PAPERS3)
+
 //#define TIME_PRINT
 
 // Private
@@ -440,3 +442,5 @@ uint8_t *msg_flip_nowait(void) {
 uint32_t msg_get_vsync_count(void) {
     return s_vsync_count;
 }
+
+#endif /* PLAT_M5PAPERS3 */

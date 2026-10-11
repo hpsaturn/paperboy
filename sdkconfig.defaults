@@ -1,16 +1,13 @@
 # ---------------------------------------------------------------------------
-# M5Paper (original) target — ESP32-D0WDQ6-V3 (classic ESP32, not the S3/S3).
+# Common defaults for both supported boards.
 #
-# Usage:  idf.py set-target esp32   (or just: idf.py build)
+# The board is selected by the IDF target:
+#   idf.py set-target esp32     → M5Paper  (original, ESP32-D0WDQ6-V3)
+#   idf.py set-target esp32s3   → M5PaperS3
+#
+# Target-specific options live in sdkconfig.defaults.<target>, which ESP-IDF
+# applies automatically after this file.
 # ---------------------------------------------------------------------------
-
-# Chip: original M5Paper runs the classic ESP32 (dual-core Xtensa LX6).
-CONFIG_IDF_TARGET="esp32"
-
-# M5Paper has 16 MB flash (the S3 variant is different). The original board
-# uses the DIO flash mode.
-CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
-CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
 
 # The vendored CrankBoy/peanut_gb emulator core triggers -Werror on a handful
 # of harmless macro redefinitions (likely/unlikely, DMG_CLOCK_FREQ, ...).

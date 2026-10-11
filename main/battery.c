@@ -1,4 +1,5 @@
 #include "battery.h"
+#include "board.h"
 
 #include "esp_adc/adc_oneshot.h"
 #include "esp_timer.h"
@@ -9,9 +10,10 @@
 static const char *TAG = "battery";
 
 /*
- * Hardware wiring (M5PaperS3):
- *   Battery+ ── R1 ── GPIO3 ── R2 ── GND   (R1 = R2, so ½× divider)
- *   GPIO3 = ADC1_CHANNEL_2 on ESP32-S3
+ * Hardware wiring (per board, see board.h):
+ *   Battery+ ── R1 ── ADC pin ── R2 ── GND   (R1 = R2, so ½× divider)
+ *   M5PaperS3 : GPIO3  = ADC1_CHANNEL_2
+ *   M5Paper   : GPIO35 = ADC1_CHANNEL_7
  *
  * ADC attenuation:
  *   ADC_ATTEN_DB_12 gives a full-scale input of ~2.5 V.
@@ -19,10 +21,9 @@ static const char *TAG = "battery";
  *   comfortably covers the LiPo operating window of 3.0–4.2 V.
  */
 #define BAT_ADC_UNIT     ADC_UNIT_1
-#define BAT_ADC_CHANNEL  ADC_CHANNEL_2   /* GPIO3 on ESP32-S3 */
+#define BAT_ADC_CHANNEL  ((adc_channel_t)BAT_ADC_CHANNEL_NUM)
 #define BAT_ADC_ATTEN    ADC_ATTEN_DB_12 /* 0–≈2.5 V input range  */
 #define BAT_SAMPLES      8               /* readings to average    */
-#define BAT_DIVIDER      2               /* resistor divider ratio */
 
 static adc_oneshot_unit_handle_t s_adc_handle  = NULL;
 static adc_cali_handle_t         s_cali_handle = NULL;

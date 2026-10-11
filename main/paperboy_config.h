@@ -7,9 +7,11 @@
  * sdkconfig or touching the full Kconfig dependency graph.
  */
 
-// Currently frame time is 17.7ms (~57fps)
-// Slightly lower than 59.7 so we are more likely to hit it
-#define PAPERBOY_BUZZER_GPIO                    21
+// Buzzer/speaker GPIO is defined per board in board.h (M5PaperS3 = GPIO21,
+// original M5Paper = GPIO19 on the expansion header; the M5Paper has no
+// on-board speaker).
+#include "board.h"
+#define PAPERBOY_BUZZER_GPIO                    BOARD_BUZZER_GPIO
 
 /*
  * PCM audio settings (used by audio.c / audio_pwm.c only).

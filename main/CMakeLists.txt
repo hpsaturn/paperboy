@@ -1,17 +1,22 @@
-# Select the PCM audio backend by changing PAPERBOY_AUDIO_PCM_IMPL:
-#   audio_pdm.c  — I2S PDM TX       (default; accurate PCM, quietest)
-#   audio_pwm.c  — LEDC PCM via ISR (accurate PCM, louder)
+# Per-target source selection.
 #
-# The polyphonic backend (audio_poly_pwm.c) is always compiled in.
-# Runtime selection between PCM, Polyphony, and Mute is done in the game
-# selection menu via the "Snd:" item.
+#   esp32s3 → M5PaperS3: bare EPD parallel bus ("MSG"), I2S PDM audio
+#   esp32   → M5Paper  : IT8951 SPI controller, LEDC audio (no on-board speaker)
 #
-# Usage:  cmake -DPAPERBOY_AUDIO_PCM_IMPL=audio_pwm.c  (or edit below)
-set(PAPERBOY_AUDIO_PCM_IMPL "audio_pdm.c" CACHE STRING
+if (IDF_TARGET STREQUAL "esp32")
+    set(PAPERBOY_EPD_IMPL  "msg/msg_it8951.c")
+    set(PAPERBOY_AUDIO_PCM_IMPL_DEFAULT "audio_pwm.c")
+else()
+    set(PAPERBOY_EPD_IMPL  "msg/msg.c")
+    set(PAPERBOY_AUDIO_PCM_IMPL_DEFAULT "audio_pdm.c")
+endif()
+
+# PCM backend is overridable:  cmake -DPAPERBOY_AUDIO_PCM_IMPL=audio_pwm.c ...
+set(PAPERBOY_AUDIO_PCM_IMPL "${PAPERBOY_AUDIO_PCM_IMPL_DEFAULT}" CACHE STRING
     "PCM audio backend source file (audio_pdm.c or audio_pwm.c)")
 
 idf_component_register(
-    SRCS "main.c" "ui.c" "msg/msg.c" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c" "battery.c"
+    SRCS "main.c" "ui.c" "${PAPERBOY_EPD_IMPL}" "gbemu.c" "audio.c" "${PAPERBOY_AUDIO_PCM_IMPL}" "audio_poly_pwm.c" "minigb_apu/minigb_apu.c" "touch.c" "profiler.c" "battery.c"
     INCLUDE_DIRS "." "msg" "crankboy_core" "minigb_apu"
     REQUIRES driver esp_driver_sdspi esp_driver_sdmmc fatfs esp_timer esp_lcd esp_driver_ledc esp_driver_i2s esp_driver_i2c esp_adc
 )

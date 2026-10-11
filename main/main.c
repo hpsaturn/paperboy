@@ -43,11 +43,7 @@ static paperboy_cfg_t s_cfg;
 #define PAPERBOY_GB_ROM_MAX_SIZE (4 * 1024 * 1024)
 #define SD_MOUNT_POINT "/sdcard"
 
-/* M5PaperS3 SD SPI pins */
-#define SD_PIN_CLK 39
-#define SD_PIN_MOSI 38
-#define SD_PIN_MISO 40
-#define SD_PIN_CS 47
+/* SD SPI pins come from board.h (they share the EPD bus on M5Paper). */
 
 /*
  * GB rendering: 3× scale, Bayer-like dithering, 90° CW rotation.
@@ -95,7 +91,11 @@ static esp_err_t sdcard_mount(void)
     gpio_set_pull_mode((gpio_num_t)SD_PIN_CS, GPIO_PULLUP_ONLY);
 
     err = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
-    if (err != ESP_OK) {
+    if (err == ESP_ERR_INVALID_STATE) {
+        /* The bus is already up (on M5Paper the EPD IT8951 driver owns SPI2
+         * and shares SCK/MOSI/MISO with the card slot). Keep going. */
+        ESP_LOGI(TAG, "SPI%d already initialised, reusing for SD", host.slot);
+    } else if (err != ESP_OK) {
         ESP_LOGE(TAG, "spi_bus_initialize failed: %s", esp_err_to_name(err));
         return err;
     }
@@ -234,7 +234,12 @@ static bool build_state_path(const char *rom_path, char *state_path, size_t stat
 static void cfg_read(paperboy_cfg_t *cfg)
 {
     cfg->last_rom[0]  = '\0';
+#if defined(PLAT_M5PAPER)
+    /* The original M5Paper has no on-board speaker/amplifier. */
+    cfg->audio_engine = AUDIO_ENGINE_MUTE;
+#else
     cfg->audio_engine = AUDIO_ENGINE_PCM;
+#endif
 
     FILE *f = fopen(PAPERBOY_CFG_FILE, "r");
     if (!f) {

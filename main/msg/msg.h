@@ -8,7 +8,7 @@
 // to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 // copies of the Software, and to permit persons to whom the Software is
 // furnished to do so, subject to the following conditions:
-// 
+//
 // The above copyright notice and this permission notice shall be included in
 // all copies or substantial portions of the Software.
 //
@@ -25,36 +25,18 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// Platform definition
-#define PLAT_M5PAPERS3
+// Board / platform selection (defines PLAT_M5PAPER or PLAT_M5PAPERS3 and the
+// pin map).  The same API below is implemented by two backends:
+//   msg/msg.c        — M5PaperS3 bare EPD parallel bus ("MSG" engine)
+//   msg/msg_it8951.c — M5Paper IT8951 SPI controller
+#include "board.h"
 
-#if defined(PLAT_M5PAPERS3)
+/* Panel geometry (common to both boards). */
 #define EPD_WIDTH           960
 #define EPD_HEIGHT          540
-#define EPD_LINE_PAD        16
-#define EPD_XCK             24000000
-#define EPD_BUSW            8
 
-#define EPD_IMAGE_FIELDS    8
-
-#define EPD_PWR_EN_PIN      45
-#define EPD_BST_EN_PIN      46
-#define EPD_SDCE_PIN        13
-#define EPD_SDLE_PIN        15
-#define EPD_SDCK_PIN        16
-#define EPD_GDSP_PIN        17
-#define EPD_GDCK_PIN        18
-
-#define EPD_D0_PIN          6
-#define EPD_D1_PIN          14
-#define EPD_D2_PIN          7
-#define EPD_D3_PIN          12
-#define EPD_D4_PIN          9
-#define EPD_D5_PIN          11
-#define EPD_D6_PIN          8
-#define EPD_D7_PIN          10
-#endif
-
+/* Emulated-screen ("video") window, in panel pixels and in the packed 1bpp
+ * buffer layout produced by the emulator core. */
 #define EPD_VIDEO_WIDTH     (144*3)
 #define EPD_VIDEO_HEIGHT    (160)
 
