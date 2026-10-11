@@ -353,8 +353,18 @@ void msg_init(void)
     it_hw_init();
 
     for (int i = 0; i < 2; i++) {
+        /* MALLOC_CAP_8BIT is mandatory here.  MALLOC_CAP_INTERNAL alone may hand
+         * out IRAM (0x4008_0000-0x400A_0000) on the original ESP32, which the CPU
+         * can only read/write with 4-byte aligned word accesses.  Both the
+         * emulator core and pack4() touch this buffer byte-wise, which aborts
+         * with a LoadStoreError if the buffer lands in IRAM.  Fall back to PSRAM
+         * (byte accessible) if internal DRAM cannot satisfy the request. */
         fb[i] = (uint8_t *)heap_caps_aligned_calloc(16, 1, EPD_VIDEO_FB_SIZE,
-                                                    MALLOC_CAP_INTERNAL);
+                                                    MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+        if (fb[i] == NULL) {
+            fb[i] = (uint8_t *)heap_caps_aligned_calloc(16, 1, EPD_VIDEO_FB_SIZE,
+                                                        MALLOC_CAP_SPIRAM);
+        }
         if (fb[i] == NULL) {
             ESP_LOGE(TAG, "failed to allocate video buffer %d", i);
         } else {
