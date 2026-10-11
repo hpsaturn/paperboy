@@ -525,8 +525,30 @@ void msg_enable_video(bool en)
 
 uint8_t *msg_flip(void)
 {
-    /* Pace to the 60 Hz emulated frame clock (see file header). */
-    xSemaphoreTake(s_frame_sem, portMAX_DELAY);
+    /* Pace to the 60 Hz emulated frame clock (see file header).
+     *
+     * Two distinct cases must both yield to the scheduler:
+     *
+     *   1. The clock has not ticked yet (the normal case - the caller is
+     *      faster than 60 fps).  Block until the next tick; the caller is
+     *      therefore paced at 60 fps and spends most of the frame blocked,
+     *      which is what lets IDLE0 run and keeps the task WDT fed.
+     *
+     *   2. The clock already ticked while the caller was busy (the caller is
+     *      SLOWER than 60 fps - e.g. the ROM menu, which repaints the whole
+     *      432x480 window pixel by pixel and can exceed the 16.7 ms budget).
+     *      Here a plain take() would succeed immediately and never block, so
+     *      this task would hold CPU0 at 100% with nothing ever yielding:
+     *      IDLE0 never runs and the task watchdog fires after 5 s (seen as
+     *      "IDLE0 (CPU 0) did not reset the watchdog", PC inside ui_put_pixel).
+     *      Detect that case (the semaphore is already posted) and block for
+     *      one tick explicitly so the idle task is always scheduled.
+     */
+    if (xSemaphoreTake(s_frame_sem, 0) != pdTRUE) {
+        xSemaphoreTake(s_frame_sem, portMAX_DELAY);
+    } else {
+        vTaskDelay(1);   /* behind the frame clock: still yield to IDLE0 */
+    }
 
     /* Hand the finished frame to the display task.  A copy is required because
      * the emulator immediately reuses s_render for the next frame. */
