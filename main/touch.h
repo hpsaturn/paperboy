@@ -6,6 +6,7 @@
 #define TP_ACTION_LOAD          0x01
 #define TP_ACTION_SAVE          0x02
 #define TP_ACTION_CLEAR_SCREEN  0x04
+#define TP_ACTION_POWER         0x08   /* soft power-off (M5Paper main-power latch) */
 
 typedef struct {
 	uint8_t gb_buttons;

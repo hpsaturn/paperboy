@@ -532,6 +532,11 @@ ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t 
             heap_caps_free(files);
             return UI_ROM_PICK_LOAD_LAST;
         }
+
+        if (ev.actions & TP_ACTION_POWER) {
+            heap_caps_free(files);
+            return UI_ROM_PICK_POWER_OFF;
+        }
     }
 
 #undef PICKER_IDX_SETTINGS

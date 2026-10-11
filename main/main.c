@@ -602,6 +602,44 @@ static bool load_game_session(const char *rom_path, bool include_snapshot)
 
 /* ui_put_pixel / ui_put_rect are now defined in ui.c (see ui.h). */
 
+/*
+ * Soft power-off (option a).
+ *
+ *  1. Optionally snapshot the running game, so it resumes where it stopped.
+ *  2. Flush the config and cleanly unmount the SD card (commits the FAT).
+ *  3. Cut the panel and open the main-power latch (msg_power_off()).
+ *
+ * On M5Paper the latch on GPIO2 really removes power, so the board goes off and
+ * this only returns if the unit is powered purely from USB.  In that case we
+ * park here instead of spinning.
+ */
+static void paperboy_power_off(bool save_session)
+{
+    ESP_LOGI(TAG, "Power-off requested%s", save_session ? " (saving session)" : "");
+
+    if (save_session && s_rom_path[0] != '\0') {
+        if (save_game_session(s_rom_path)) {
+            ESP_LOGI(TAG, "Session saved before power-off");
+        }
+    }
+
+    cfg_write(&s_cfg);
+
+    if (s_sd_card != NULL) {
+        esp_err_t err = esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, s_sd_card);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "SD unmount failed: %s", esp_err_to_name(err));
+        }
+        s_sd_card = NULL;
+    }
+
+    msg_power_off();
+
+    while (1) {
+        vTaskDelay(portMAX_DELAY);
+    }
+}
+
 void app_main(void)
 {
     esp_err_t sd_err;
@@ -651,6 +689,11 @@ void app_main(void)
 
             if (pick == UI_ROM_PICK_NONE) {
                 break;
+            }
+
+            if (pick == UI_ROM_PICK_POWER_OFF) {
+                /* Nothing is running yet, so only the config needs flushing. */
+                paperboy_power_off(false);
             }
 
             if (pick == UI_ROM_PICK_LOAD_LAST) {
@@ -776,6 +819,11 @@ void app_main(void)
             vsync_ref = msg_get_vsync_count();
             skip_count = 0;
             continue;
+        }
+
+        if (action_edges & TP_ACTION_POWER) {
+            paperboy_gb_set_buttons(0);
+            paperboy_power_off(true);
         }
 
         bool skip_render = (skip_count > 0);

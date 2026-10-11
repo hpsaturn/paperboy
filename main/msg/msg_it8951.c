@@ -578,4 +578,34 @@ uint32_t msg_get_vsync_count(void)
     return s_vsync_count;
 }
 
+/*
+ * Soft power-off for M5Paper.
+ *
+ * The board is kept alive by a self-latching main-power rail on GPIO2
+ * (M5EPD_MAIN_PWR_PIN): drive it low and the PMIC cuts everything.  Before that
+ * we stop the 60 Hz clock and the display task so no SPI transfer is in flight,
+ * then drop the EPD / 5V rails - this is exactly what M5EPD::shutdown() does
+ * (disableMainPower()).
+ */
+void msg_power_off(void)
+{
+    if (s_frame_timer != NULL) {
+        esp_timer_stop(s_frame_timer);
+    }
+
+    if (s_disp_task != NULL) {
+        vTaskDelete(s_disp_task);
+        s_disp_task = NULL;
+    }
+
+    s_ready = false;
+    enable_video = false;
+
+    board_epd_power(false);   /* EPD_PWR, EXT_PWR, then MAIN_PWR low = OFF */
+
+    /* If the latch did not open (e.g. USB-only power) the board stays up;
+     * the caller parks the main task. */
+    ESP_LOGW(TAG, "Power latch released (GPIO%d low)", EPD_MAIN_PWR_PIN);
+}
+
 #endif /* PLAT_M5PAPER */

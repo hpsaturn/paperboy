@@ -93,7 +93,14 @@ static void msg_power_on() {
     gpio_set_level(EPD_GDSP_PIN, 1);
 }
 
-static void msg_power_off() {
+/*
+ * Power the EPD rails down (M5PaperS3).
+ *
+ * The S3 board has no software-controlled main-power latch, so this only cuts
+ * the panel rails (EPD_PWR_EN / BOOST_EN); full off / deep sleep on that board
+ * needs a separate mechanism (see option b/c).
+ */
+void msg_power_off(void) {
     // Reset IO levels
     gpio_set_level(EPD_GDCK_PIN, 0);
     gpio_set_level(EPD_GDSP_PIN, 0);

@@ -58,3 +58,8 @@ uint8_t *msg_flip_nowait(void);
 // Monotonic counter incremented at every EPD frame-start (VSYNC).
 // Read before and after rendering to detect a missed VSYNC.
 uint32_t msg_get_vsync_count(void);
+
+// Turn the board off.  Stops the display path, powers down the panel and (on
+// M5Paper) opens the main-power latch (GPIO2 low).  Does not return on hardware
+// where the latch actually cuts power.
+void msg_power_off(void);
