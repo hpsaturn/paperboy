@@ -206,7 +206,7 @@ static void it_wait_lut(void)
 
 /* Send a run of 4bpp words as one CS-asserted burst (preamble once, chunks of
  * a DMA-capable internal buffer held together with SPI_TRANS_CS_KEEP_ACTIVE). */
-#define ITW_CHUNK 2048
+#define ITW_CHUNK 8192
 static uint8_t s_wbuf[ITW_CHUNK] __attribute__((aligned(4)));
 static size_t  s_wpos;
 
@@ -341,7 +341,7 @@ static void it_hw_init(void)
         .quadwp_io_num = -1,
         .quadhd_io_num = -1,
         /* Large enough for the shared microSD card transfers, too. */
-        .max_transfer_sz = 4096,
+        .max_transfer_sz = 8192,
     };
     ESP_ERROR_CHECK(spi_bus_initialize((spi_host_device_t)EPD_SPI_HOST_NUM,
                                        &buscfg, SPI_DMA_CH_AUTO));
