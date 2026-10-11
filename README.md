@@ -1,69 +1,68 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-C6 | ESP32-H2 | ESP32-P4 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+# Paperboy
 
-# Blink Example
+Paperboy turns an M5Stack e-paper tablet into a handheld Game Boy (DMG).
 
-(See the README.md file in the upper level 'examples' directory for more information about examples.)
+## Introduction
 
-This example demonstrates how to blink a LED by using the GPIO driver or using the [led_strip](https://components.espressif.com/component/espressif/led_strip) library if the LED is addressable e.g. [WS2812](https://cdn-shop.adafruit.com/datasheets/WS2812B.pdf). The `led_strip` library is installed via [component manager](main/idf_component.yml).
+Paperboy is an ESP-IDF firmware that runs original Game Boy games on M5Stack
+e-ink devices. It emulates the DMG, renders every frame straight onto the
+e-paper panel and provides sound, touch controls, an on-device ROM picker and
+persistent save states. The emulation core is CrankBoy (peanut_gb), so game
+logic runs at full DMG speed while the panel is refreshed as fast as the
+e-paper physics allow.
 
-## How to Use Example
+## Supported boards
 
-Before project configuration and build, be sure to set the correct chip target using `idf.py set-target <chip_name>`.
+Both hardware revisions are supported. The board is selected at build time with
+the IDF target; there is nothing else to configure:
 
-### Hardware Required
+| Target    | Board                | SoC              | Display                 | Audio      |
+|-----------|----------------------|------------------|-------------------------|------------|
+| `esp32s3` | M5PaperS3            | ESP32-S3         | ED047TC1 parallel (MSG) | I2S PDM    |
+| `esp32`   | M5Paper (original)   | ESP32-D0WDQ6-V3  | ED047TC1 via IT8951 SPI | LEDC       |
 
-* A development board with normal LED or addressable LED on-board (e.g., ESP32-S3-DevKitC, ESP32-C6-DevKitC etc.)
-* A USB cable for Power supply and programming
+## Features
 
-See [Development Boards](https://www.espressif.com/en/products/devkits) for more information about it.
+- Game Boy / DMG emulation at full speed.
+- ROM picker at startup, browsing the microSD card.
+- Save states (`.sst`) and persistent configuration (`paperboy.cfg`).
+- Battery gauge and low-battery overlay.
+- Touch zones for load / save / power.
+- Hardware power button (long press) with true power-off on the M5Paper.
 
-### Configure the Project
+## Requirements
 
-Open the project configuration menu (`idf.py menuconfig`).
+- ESP-IDF v5.5.x installed and exported (`idf.py` available on your PATH).
+- An M5PaperS3 or M5Paper, a USB cable and a FAT32 microSD card with `.gb` ROMs.
 
-In the `Example Configuration` menu:
+## Building and flashing
 
-* Select the LED type in the `Blink LED type` option.
-  * Use `GPIO` for regular LED
-  * Use `LED strip` for addressable LED
-* If the LED type is `LED strip`, select the backend peripheral
-  * `RMT` is only available for ESP targets with RMT peripheral supported
-  * `SPI` is available for all ESP targets
-* Set the GPIO number used for the signal in the `Blink GPIO number` option.
-* Set the blinking period in the `Blink period in ms` option.
+Select the board, then build and flash it:
 
-### Build and Flash
+    # M5PaperS3 (ESP32-S3)
+    idf.py set-target esp32s3
 
-Run `idf.py -p PORT flash monitor` to build, flash and monitor the project.
+    # ...or the original M5Paper (ESP32)
+    idf.py set-target esp32
 
-(To exit the serial monitor, type ``Ctrl-]``.)
+    idf.py build
+    idf.py -p /dev/ttyUSB0 flash monitor
 
-See the [Getting Started Guide](https://docs.espressif.com/projects/esp-idf/en/latest/get-started/index.html) for full steps to configure and use ESP-IDF to build projects.
+`set-target` selects the matching pin map, display transport and defaults from
+`sdkconfig.defaults*`, so no further configuration is needed. When you switch
+between boards, run `set-target` again: it regenerates `sdkconfig` for the new
+target.
 
-## Example Output
+## Using it
 
-As you run the example, you will see the LED blinking, according to the previously defined period. For the addressable LED, you can also change the LED color by setting the `led_strip_set_pixel(led_strip, 0, 16, 16, 16);` (LED Strip, Pixel Number, Red, Green, Blue) with values from 0 to 255 in the [source file](main/blink_example_main.c).
+1. Copy your Game Boy ROMs (`.gb`) to the root of the microSD card.
+2. Insert the card and power the board on.
+3. Select a ROM with the D-pad (UP / DOWN) and confirm with A or START.
+4. In game: the touch zones handle load / save / power; hold the power button
+   to shut the device down.
 
-```text
-I (315) example: Example configured to blink addressable LED!
-I (325) example: Turning the LED OFF!
-I (1325) example: Turning the LED ON!
-I (2325) example: Turning the LED OFF!
-I (3325) example: Turning the LED ON!
-I (4325) example: Turning the LED OFF!
-I (5325) example: Turning the LED ON!
-I (6325) example: Turning the LED OFF!
-I (7325) example: Turning the LED ON!
-I (8325) example: Turning the LED OFF!
-```
+## Credits
 
-Note: The color order could be different according to the LED model.
-
-The pixel number indicates the pixel position in the LED strip. For a single LED, use 0.
-
-## Troubleshooting
-
-* If the LED isn't blinking, check the GPIO or the LED type selection in the `Example Configuration` menu.
-
-For any technical queries, please open an [issue](https://github.com/espressif/esp-idf/issues) on GitHub. We will get back to you soon.
+- Emulation core: CrankBoy / peanut_gb.
+- Upstream Paperboy project by zephray.
+- M5Paper (ESP32) support, IT8951 display backend and hardware fixes in this fork.
