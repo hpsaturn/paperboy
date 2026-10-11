@@ -37,7 +37,18 @@ typedef struct {
 static paperboy_cfg_t s_cfg;
 
 #define PAPERBOY_PERSIST_EXTENSION ".sav"
-#define PAPERBOY_STATE_EXTENSION   ".state"
+/*
+ * Save-state sidecar extension.
+ *
+ * The SD card is mounted with CONFIG_FATFS_LFN_NONE (see sdkconfig), so every
+ * file is exposed under its 8.3 SHORT name - that is why the ROM shows up as
+ * "SUPERM~1.GB" instead of its real long name.  A sidecar name derived from
+ * that base (base is already up to 8 chars) must stay within 8.3 too.  The old
+ * ".state" is a 5-char extension => FatFS rejects it with FR_INVALID_NAME and
+ * f_open("wb") returns NULL ("Failed to open state file").  ".sst" is 3 chars,
+ * so "SUPERM~1.sst" is a legal short name.
+ */
+#define PAPERBOY_STATE_EXTENSION   ".sst"
 #define PAPERBOY_CFG_FILE          SD_MOUNT_POINT "/paperboy.cfg"
 
 #define PAPERBOY_GB_ROM_MAX_SIZE (4 * 1024 * 1024)
