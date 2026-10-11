@@ -50,13 +50,28 @@ void battery_init(void)
         return;
     }
 
-    /* Try to create a line-fitting calibration handle (ESP32-S3 scheme). */
+    /* Create a calibration handle using whichever scheme the target SoC
+     * supports: curve fitting (ESP32-S2/S3/Cx/...) or line fitting (ESP32). */
+#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
     adc_cali_curve_fitting_config_t cali_cfg = {
         .unit_id  = BAT_ADC_UNIT,
         .atten    = BAT_ADC_ATTEN,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
     esp_err_t cali_err = adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_cali_handle);
+#elif ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    adc_cali_line_fitting_config_t cali_cfg = {
+        .unit_id  = BAT_ADC_UNIT,
+        .atten    = BAT_ADC_ATTEN,
+        .bitwidth = ADC_BITWIDTH_DEFAULT,
+    };
+#if CONFIG_IDF_TARGET_ESP32
+    cali_cfg.default_vref = 1100;  /* used only if eFuse has no calibration */
+#endif
+    esp_err_t cali_err = adc_cali_create_scheme_line_fitting(&cali_cfg, &s_cali_handle);
+#else
+    esp_err_t cali_err = ESP_ERR_NOT_SUPPORTED;
+#endif
     s_cali_valid = (cali_err == ESP_OK);
     if (!s_cali_valid) {
         ESP_LOGW(TAG, "ADC calibration unavailable (%s) – using raw approximation",
