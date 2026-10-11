@@ -85,6 +85,26 @@ static bool     enable_video;
 static bool     s_ready;
 static bool     s_img_to_white;
 
+/* ── Cooperative WDT service ───────────────────────────────────────────────
+ * The whole IT8951 push runs in the caller's task (the app_main render loop,
+ * pinned to CPU0).  One full-frame push is ~330 ms of SPI traffic plus panel
+ * refresh, and nothing on that path blocks on a FreeRTOS primitive for more
+ * than a tick, so IDLE0 can go unscheduled for far longer than the 5 s task
+ * watchdog timeout -- which then fires on every cycle.  Yield at least once
+ * every second so IDLE0 runs and feeds the TWDT.  vTaskDelay(1) is what lets
+ * the *lower-priority* idle task run; taskYIELD() would not. */
+#define IT_WDT_YIELD_US (1000 * 1000)
+static int64_t s_last_yield_us;
+
+static void it_service_wdt(void)
+{
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_yield_us >= IT_WDT_YIELD_US) {
+        s_last_yield_us = now;
+        vTaskDelay(1);
+    }
+}
+
 /* ── Low-level SPI framing ─────────────────────────────────────────────── */
 
 /* All transfers are 16-bit words sent most-significant byte first. */
@@ -383,6 +403,7 @@ void msg_init(void)
 
 void msg_start(void)
 {
+    it_service_wdt();
     /* Flash the panel to a clean white state (INIT waveform). */
     it_ld_img_area_begin(0, 0, EPD_WIDTH, EPD_HEIGHT);
     for (int i = 0; i < (EPD_WIDTH * EPD_HEIGHT / 4); i++) {
@@ -400,6 +421,7 @@ void msg_display_image(uint8_t *img, bool to_white)
     if (img == NULL || !s_ready) {
         return;
     }
+    it_service_wdt();
 
     /* Load the full 960x540 1bpp image, MSB-first, bit set = black unless
      * to_white requests the inverse polarity. */
@@ -424,6 +446,7 @@ uint8_t *msg_flip(void)
     /* The caller has just finished rendering into fb[cur]; push it to the
      * panel, then hand out the other buffer for the next frame. */
     if (enable_video && s_ready && fb[cur] != NULL) {
+        it_service_wdt();
         const uint8_t *src = fb[cur];
         it_ld_img_area_begin(EPD_VIDEO_WIN_X, EPD_VIDEO_WIN_Y,
                              EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H);
