@@ -11,6 +11,10 @@ persistent save states. The emulation core is CrankBoy (peanut_gb), so game
 logic runs at full DMG speed while the panel is refreshed as fast as the
 e-paper physics allow.
 
+For full details please visit the original post:
+
+[60FPS Eink GameBoy Emulator on M5PaperS3](https://www.hackster.io/wenting-zhang/60fps-eink-gameboy-emulator-on-m5papers3-57e4e5)
+
 ## Supported boards
 
 Both hardware revisions are supported. The board is selected at build time with
@@ -64,5 +68,5 @@ target.
 ## Credits
 
 - Emulation core: CrankBoy / peanut_gb.
-- Upstream Paperboy project by zephray.
+- Upstream Paperboy project by @zephray.
 - M5Paper (ESP32) support, IT8951 display backend and hardware fixes in this fork.
