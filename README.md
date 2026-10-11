@@ -67,6 +67,7 @@ target.
 
 ## Credits
 
+- Wenting Zhang (@zephray) for its wonderful [60FPS eInk implementation](https://www.hackster.io/wenting-zhang/60fps-eink-gameboy-emulator-on-m5papers3-57e4e5)
 - Emulation core: CrankBoy / peanut_gb.
 - Upstream Paperboy project by @zephray.
-- M5Paper (ESP32) support, IT8951 display backend and hardware fixes in this fork.
+- M5Paper (ESP32) support, IT8951 display backend and hardware fixes in this fork (@hpsaturn)
