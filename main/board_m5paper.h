@@ -42,13 +42,15 @@
 #define TOUCH_PIN_SCL       22
 #define TOUCH_PIN_INT       36
 
-/* ── Dial switch (left edge).  The centre press is the POWER button:
- *     rotate left  -> GPIO37 (user button)
- *     press centre -> GPIO38 (POWER button, active-low)
- *     rotate right -> GPIO39 (user button)
+/* ── Dial switch (left edge).  The centre press is the firmware RESET button
+ *    (long press -> reboot back to the main menu).  Power on/off itself is a
+ *    hardware function on this board, so no software shutdown is mapped here.
+ *     rotate left  -> GPIO37 (user button, unused)
+ *     press centre -> GPIO38 (reset button, active-low)
+ *     rotate right -> GPIO39 (user button, unused)
  * Source: M5Stack M5Paper pin map ("Dial Switch"). */
 #define BOARD_DIAL_LEFT_PIN   37
-#define BOARD_PWR_BTN_PIN     38   /* centre press = power button */
+#define BOARD_RESET_BTN_PIN   38   /* centre press = reset to main menu */
 #define BOARD_DIAL_RIGHT_PIN  39
 
 /* ── Battery ADC: GPIO35 = ADC1_CH7, 1/2 resistor divider ──────────────── */

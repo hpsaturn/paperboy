@@ -38,6 +38,7 @@ typedef enum {
 	UI_ROM_PICK_SELECTED,
 	UI_ROM_PICK_LOAD_LAST,
 	UI_ROM_PICK_POWER_OFF,
+	UI_ROM_PICK_RESTART,
 } ui_rom_pick_result_t;
 
 ui_rom_pick_result_t ui_rom_picker(const char *mount_pt, char *out_path, size_t path_size);

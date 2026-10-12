@@ -32,7 +32,8 @@ the IDF target; there is nothing else to configure:
 - Save states (`.sst`) and persistent configuration (`paperboy.cfg`).
 - Battery gauge and low-battery overlay.
 - Touch zones for load / save / power.
-- Hardware power button (long press) with true power-off on the M5Paper.
+- Hardware reset button (dial centre, long press) returns to the main menu; on
+  the M5Paper, power on/off itself is handled by the board's hardware.
 
 ## Requirements
 
@@ -62,8 +63,8 @@ target.
 1. Copy your Game Boy ROMs (`.gb`) to the root of the microSD card.
 2. Insert the card and power the board on.
 3. Select a ROM with the D-pad (UP / DOWN) and confirm with A or START.
-4. In game: the touch zones handle load / save / power; hold the power button
-   to shut the device down.
+4. In game: the touch zones handle load / save / power; hold the dial-centre
+   button to reset the device back to the main menu.
 
 ## Credits
 

@@ -8,6 +8,7 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_system.h"
 #include "esp_vfs_fat.h"
 #include <esp_timer.h>
 #include "driver/spi_common.h"
@@ -21,7 +22,7 @@
 #include "touch.h"
 #include "ui.h"
 #include "battery.h"
-#include "power_button.h"
+#include "reset_button.h"
 #include "profiler.h"
 
 static const char *TAG = "paperboy";
@@ -641,6 +642,40 @@ static void paperboy_power_off(bool save_session)
     }
 }
 
+/*
+ * Reset-to-main-menu.
+ *
+ * The M5Paper handles real power on/off in hardware (running on battery, its
+ * physical reset/power path already opens the main-power rail), so the
+ * firmware no longer maps a software shutdown onto the dial switch.  Instead
+ * the dial centre asks for a full device reset:
+ *
+ *  1. Flush the config.
+ *  2. Cleanly unmount the SD card (commits the FAT before the reset).
+ *  3. esp_restart() -> app_main() runs again and re-enters the ROM picker,
+ *     i.e. the main menu.
+ *
+ * No game snapshot is taken: the point of the reset is to leave the game.
+ * This never returns.
+ */
+static void paperboy_reset_to_menu(void)
+{
+    ESP_LOGI(TAG, "Reset to main menu requested - restarting");
+
+    cfg_write(&s_cfg);
+
+    if (s_sd_card != NULL) {
+        esp_err_t err = esp_vfs_fat_sdcard_unmount(SD_MOUNT_POINT, s_sd_card);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "SD unmount failed: %s", esp_err_to_name(err));
+        }
+        s_sd_card = NULL;
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(100));   /* let the console drain */
+    esp_restart();
+}
+
 void app_main(void)
 {
     esp_err_t sd_err;
@@ -657,8 +692,8 @@ void app_main(void)
     tp_init();  /* GT911 touch — non-fatal if absent */
     battery_init();
 
-    power_button_init();   /* M5Paper dial-switch centre = power button */
-    power_button_start();
+    reset_button_init();   /* M5Paper dial-switch centre = return-to-menu */
+    reset_button_start();
 
     uint8_t *fb = (uint8_t *)heap_caps_calloc(1, EPD_FB_SIZE, MALLOC_CAP_SPIRAM);
     memset(fb, 0xff, EPD_FB_SIZE);
@@ -698,6 +733,11 @@ void app_main(void)
             if (pick == UI_ROM_PICK_POWER_OFF) {
                 /* Nothing is running yet, so only the config needs flushing. */
                 paperboy_power_off(false);
+            }
+
+            if (pick == UI_ROM_PICK_RESTART) {
+                /* Physical reset button held while the menu was open. */
+                paperboy_reset_to_menu();
             }
 
             if (pick == UI_ROM_PICK_LOAD_LAST) {
@@ -830,10 +870,11 @@ void app_main(void)
             paperboy_power_off(true);
         }
 
-        /* Hardware power button (M5Paper dial-switch centre, GPIO38). */
-        if (power_button_off_requested()) {
+        /* Hardware reset button (M5Paper dial-switch centre, GPIO38):
+         * leave the game by resetting the device back to the main menu. */
+        if (reset_button_requested()) {
             paperboy_gb_set_buttons(0);
-            paperboy_power_off(true);
+            paperboy_reset_to_menu();
         }
 
         bool skip_render = (skip_count > 0);
