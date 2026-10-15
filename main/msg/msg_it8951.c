@@ -140,10 +140,17 @@ static void it_xmit(const uint8_t *tx, size_t nbytes)
     ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
 }
 
+/* The classic ESP32 GPSPI needs its DMA buffers in internal RAM and 4-byte
+ * aligned (hal/esp32/include/hal/spi_ll.h: "*internal_size = 4").  A receive
+ * buffer that fails that makes the driver heap-allocate a temporary DMA buffer
+ * and memcpy through it on every transfer; gcc otherwise parks the 6-byte rx[6]
+ * of it_read_reg at sp+6.  TX has no alignment requirement but is aligned too. */
+#define IT_CTRL_BUF  __attribute__((aligned(4)))
+
 /* command: preamble 0x6000 then the command word */
 static void it_cmd(uint16_t cmd)
 {
-    uint8_t b[4] = { 0x60, 0x00, (uint8_t)(cmd >> 8), (uint8_t)cmd };
+    uint8_t b[4] IT_CTRL_BUF = { 0x60, 0x00, (uint8_t)(cmd >> 8), (uint8_t)cmd };
     it_wait_busy();
     it_xmit(b, sizeof(b));
 }
@@ -151,7 +158,7 @@ static void it_cmd(uint16_t cmd)
 /* one data word: preamble 0x0000 then the payload word */
 static void it_word(uint16_t w)
 {
-    uint8_t b[4] = { 0x00, 0x00, (uint8_t)(w >> 8), (uint8_t)w };
+    uint8_t b[4] IT_CTRL_BUF = { 0x00, 0x00, (uint8_t)(w >> 8), (uint8_t)w };
     it_wait_busy();
     it_xmit(b, sizeof(b));
 }
@@ -166,8 +173,8 @@ static void it_write_reg(uint16_t addr, uint16_t data)
 static void it_read_reg(uint16_t addr, uint16_t *out)
 {
     /* preamble 0x1000, one dummy word, then the payload word */
-    uint8_t tx[6] = { 0x10, 0x00, 0x00, 0x00, 0x00, 0x00 };
-    uint8_t rx[6] = { 0 };
+    uint8_t tx[6] IT_CTRL_BUF = { 0x10, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    uint8_t rx[6] IT_CTRL_BUF = { 0 };
 
     it_cmd(IT8951_TCON_REG_RD);
     it_word(addr);
