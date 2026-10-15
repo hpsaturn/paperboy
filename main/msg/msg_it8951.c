@@ -11,7 +11,7 @@
 //   * msg_start() spawns a dedicated display task pinned to CPU1 which owns the
 //     SPI bus and the panel.  The task blocks until a completed frame is
 //     published, snapshots it, then pushes it to the IT8951 (4bpp area load +
-//     DU refresh), and drops frames the panel cannot keep up with.
+//     DU4 refresh), and drops frames the panel cannot keep up with.
 //
 //   * The emulator (app_main, CPU0) renders into a scratch buffer and calls
 //     msg_flip().  msg_flip() hands a copy of the finished frame to the display
@@ -72,9 +72,10 @@ static const char *TAG = "msg_it8951";
 /* 4bpp, "B" endian, rotation 0 → the value written into LD_IMG_AREA arg0. */
 #define IT8951_LDIMG_AREA_PARAM     ((uint16_t)((1u << 8) | (2u << 4) | 0u))
 
-/* Update modes */
+/* Update modes (IT8951 datasheet / M5EPD IT8951_Defines.h numbering) */
 #define UPDATE_MODE_INIT            0
 #define UPDATE_MODE_DU              1
+#define UPDATE_MODE_DU4             6
 
 /* IT8951 memory address used for image loads (M5EPD default). */
 #define IT8951_MEM_ADDR             0x001236E0u
@@ -240,6 +241,24 @@ static inline void itw_raw(uint16_t w)
     s_wbuf[s_wpos++] = (uint8_t)w;
 }
 
+/* Append an already packed byte run.  A chunk boundary may fall inside a run,
+ * which is fine: CS stays asserted across flushes, so the controller just sees
+ * one continuous byte stream. */
+static void itw_bytes(const uint8_t *p, size_t n)
+{
+    while (n > 0) {
+        if (s_wpos == ITW_CHUNK) {
+            itw_flush(false);
+        }
+        size_t space = ITW_CHUNK - s_wpos;
+        size_t take  = (n < space) ? n : space;
+        memcpy(&s_wbuf[s_wpos], p, take);
+        s_wpos += take;
+        p      += take;
+        n      -= take;
+    }
+}
+
 /* Begin a data burst (asserts CS holding it across flushes). */
 static void itw_begin(void)
 {
@@ -310,21 +329,39 @@ static inline uint16_t pack4(const uint8_t *src, int x, bool invert)
 
 /* ── Panel writers (callers must be the only user of the SPI bus) ───────── */
 
+/* The window shows every logical row of the emulated screen an integral
+ * number of times, and spans exactly one screen width. */
+_Static_assert(EPD_VIDEO_WIN_W == EPD_VIDEO_WIDTH,
+               "packed line buffer assumes window width == emulated screen width");
+_Static_assert((EPD_VIDEO_WIN_H % EPD_VIDEO_HEIGHT) == 0,
+               "window height must be an integral multiple of the screen height");
+
 /* Push one 432x160 packed frame into the 432x480 on-panel window. */
 static void it_push_video_frame(const uint8_t *src)
 {
+    /* Each logical row is shown EPD_VIDEO_WIN_H/EPD_VIDEO_HEIGHT times (3x).
+     * Pack it ONCE (432 px 4bpp -> 216 B) and emit it for every copy, instead
+     * of re-deriving all four pixels of every word for each of the 480 rows. */
+    uint8_t line[EPD_VIDEO_WIDTH / 2];
+    const int copies = EPD_VIDEO_WIN_H / EPD_VIDEO_HEIGHT;
+
     it_ld_img_area_begin(EPD_VIDEO_WIN_X, EPD_VIDEO_WIN_Y,
                          EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H);
-    for (int ry = 0; ry < EPD_VIDEO_WIN_H; ry++) {
-        /* Each packed source row (logical GB x) is shown 3x vertically. */
-        const uint8_t *row = src + (size_t)(ry / 3) * (EPD_VIDEO_WIDTH / 8);
+    for (int r = 0; r < EPD_VIDEO_HEIGHT; r++) {
+        const uint8_t *row = src + (size_t)r * (EPD_VIDEO_WIDTH / 8);
+        int o = 0;
         for (int x = 0; x < EPD_VIDEO_WIDTH; x += 4) {
-            itw_raw(pack4(row, x, false));
+            uint16_t w = pack4(row, x, false);
+            line[o++] = (uint8_t)(w >> 8);
+            line[o++] = (uint8_t)w;
+        }
+        for (int c = 0; c < copies; c++) {
+            itw_bytes(line, sizeof(line));
         }
     }
     it_ld_img_area_end();
     it_update_area(EPD_VIDEO_WIN_X, EPD_VIDEO_WIN_Y,
-                   EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H, UPDATE_MODE_DU);
+                   EPD_VIDEO_WIN_W, EPD_VIDEO_WIN_H, UPDATE_MODE_DU4);
 }
 
 /* Display task: owns the panel.  Waits for a published frame, snapshots it and
@@ -495,7 +532,7 @@ void msg_start(void)
         ESP_LOGE(TAG, "Failed to create display task");
     }
 
-    ESP_LOGI(TAG, "Panel initialised (white), display task on CPU1");
+    ESP_LOGI(TAG, "Panel initialised (white), display task on CPU1, refresh DU4");
 }
 
 void msg_display_image(uint8_t *img, bool to_white)
